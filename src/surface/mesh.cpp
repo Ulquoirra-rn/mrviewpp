@@ -21,6 +21,7 @@
 #include <string>
 
 #include "types.h"
+#include "file/gz.h"
 
 #include "surface/freesurfer.h"
 #include "surface/utils.h"
@@ -41,6 +42,10 @@ namespace MR
         load_stl (path);
       } else if (path.substr (path.size() - 4) == ".obj" || path.substr (path.size() - 4) == ".OBJ") {
         load_obj (path);
+      } else if (path.substr (path.size() - 4) == ".mz3" || path.substr (path.size() - 4) == ".MZ3") {
+        load_mz3 (path);
+      } else if (path.substr (path.size() - 4) == ".gii" || path.substr (path.size() - 4) == ".GII") {
+        load_gii (path);
       } else {
         try {
           load_fs (path);
@@ -103,6 +108,77 @@ namespace MR
           out.push_back (v);
         }
       }
+    }
+
+
+
+    void Mesh::load_mz3 (const std::string& path)
+    {
+      // MZ3 (NiiVue / Surf-Ice): a little-endian binary mesh, optionally gzip
+      // compressed. File::GZ reads both compressed and uncompressed transparently.
+      // 16-byte header: uint16 magic(23117), uint16 attr (bit0=face, bit1=vert,
+      // bit4=double-precision vertices), uint32 nface, uint32 nvert, uint32 nskip;
+      // then FACES (nface*3 int32) followed by VERTICES (nvert*3 float32/64).
+      File::GZ in (path, "rb");
+      uint8_t header[16];
+      if (in.read (reinterpret_cast<char*> (header), 16) != 16)
+        throw Exception ("Error reading MZ3 header from \"" + path + "\"");
+
+      auto u16 = [] (const uint8_t* p) { return uint16_t (p[0]) | (uint16_t (p[1]) << 8); };
+      auto u32 = [] (const uint8_t* p) {
+        return uint32_t (p[0]) | (uint32_t (p[1]) << 8) | (uint32_t (p[2]) << 16) | (uint32_t (p[3]) << 24);
+      };
+
+      if (u16 (header) != 23117)
+        throw Exception ("\"" + path + "\" is not a valid MZ3 mesh file");
+      const uint16_t attr  = u16 (header + 2);
+      const uint32_t nface = u32 (header + 4);
+      const uint32_t nvert = u32 (header + 8);
+      const uint32_t nskip = u32 (header + 12);
+      const bool is_face   = attr & 0x01;
+      const bool is_vert   = attr & 0x02;
+      const bool is_double = attr & 0x10;
+      if (!is_vert)
+        throw Exception ("MZ3 file \"" + path + "\" contains no vertices");
+
+      if (nskip) {
+        vector<char> skip (nskip);
+        if (in.read (skip.data(), nskip) != int (nskip))
+          throw Exception ("Error skipping MZ3 header padding in \"" + path + "\"");
+      }
+
+      if (is_face) {
+        for (uint32_t i = 0; i != nface; ++i) {
+          int32_t idx[3];
+          if (in.read (reinterpret_cast<char*> (idx), sizeof (idx)) != int (sizeof (idx)))
+            throw Exception ("Error reading MZ3 faces from \"" + path + "\"");
+          vector<uint32_t> t { uint32_t (idx[0]), uint32_t (idx[1]), uint32_t (idx[2]) };
+          triangles.push_back (Triangle (t));
+        }
+      }
+
+      for (uint32_t i = 0; i != nvert; ++i) {
+        if (is_double) {
+          double v[3];
+          if (in.read (reinterpret_cast<char*> (v), sizeof (v)) != int (sizeof (v)))
+            throw Exception ("Error reading MZ3 vertices from \"" + path + "\"");
+          vertices.push_back (Vertex (v[0], v[1], v[2]));
+        } else {
+          float v[3];
+          if (in.read (reinterpret_cast<char*> (v), sizeof (v)) != int (sizeof (v)))
+            throw Exception ("Error reading MZ3 vertices from \"" + path + "\"");
+          vertices.push_back (Vertex (v[0], v[1], v[2]));
+        }
+      }
+
+      verify_data();
+    }
+
+
+
+    void Mesh::load_gii (const std::string& path)
+    {
+      throw Exception ("GIfTI (.gii) support not yet implemented (\"" + path + "\")");
     }
 
 

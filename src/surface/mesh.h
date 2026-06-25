@@ -178,6 +178,8 @@ namespace MR
         void load_stl (const std::string&);
         void load_obj (const std::string&);
         void load_fs  (const std::string&);
+        void load_mz3 (const std::string&);
+        void load_gii (const std::string&);
         void save_vtk (const std::string&, const bool) const;
         void save_stl (const std::string&, const bool) const;
         void save_obj (const std::string&) const;
