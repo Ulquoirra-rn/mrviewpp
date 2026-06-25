@@ -18,13 +18,89 @@
 
 #include <ios>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <zlib.h>
 
 #include "types.h"
 #include "file/gz.h"
 
 #include "surface/freesurfer.h"
 #include "surface/utils.h"
+
+
+namespace {
+
+  // Helpers for the GIfTI (.gii) reader: base64 decoding, zlib/gzip inflation,
+  // and minimal XML attribute / element extraction.
+
+  MR::vector<uint8_t> base64_decode (const std::string& in)
+  {
+    auto val = [] (unsigned char c) -> int {
+      if (c >= 'A' && c <= 'Z') return c - 'A';
+      if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+      if (c >= '0' && c <= '9') return c - '0' + 52;
+      if (c == '+') return 62;
+      if (c == '/') return 63;
+      return -1;
+    };
+    MR::vector<uint8_t> out;
+    int buffer = 0, bits = -8;
+    for (unsigned char c : in) {
+      if (c == '=') break;
+      const int d = val (c);
+      if (d < 0) continue;          // skip whitespace / newlines
+      buffer = (buffer << 6) | d;
+      bits += 6;
+      if (bits >= 0) { out.push_back ((buffer >> bits) & 0xFF); bits -= 8; }
+    }
+    return out;
+  }
+
+  MR::vector<uint8_t> zlib_inflate (const MR::vector<uint8_t>& in)
+  {
+    z_stream strm;
+    memset (&strm, 0, sizeof (strm));
+    if (inflateInit2 (&strm, 15 + 32) != Z_OK)   // auto-detect zlib/gzip
+      throw MR::Exception ("zlib initialisation failed while reading GIfTI data");
+    strm.next_in = const_cast<Bytef*> (in.data());
+    strm.avail_in = static_cast<uInt> (in.size());
+    MR::vector<uint8_t> out;
+    MR::vector<uint8_t> chunk (262144);
+    int ret;
+    do {
+      strm.next_out = chunk.data();
+      strm.avail_out = static_cast<uInt> (chunk.size());
+      ret = inflate (&strm, Z_NO_FLUSH);
+      if (ret != Z_OK && ret != Z_STREAM_END) { inflateEnd (&strm); throw MR::Exception ("failed to inflate GIfTI data"); }
+      out.insert (out.end(), chunk.begin(), chunk.begin() + (chunk.size() - strm.avail_out));
+    } while (ret != Z_STREAM_END);
+    inflateEnd (&strm);
+    return out;
+  }
+
+  // value of attribute name="..." within an opening XML tag
+  std::string xml_attr (const std::string& tag, const std::string& name)
+  {
+    const std::string key = name + "=\"";
+    const size_t p = tag.find (key);
+    if (p == std::string::npos) return "";
+    const size_t s = p + key.size();
+    const size_t e = tag.find ('"', s);
+    return e == std::string::npos ? "" : tag.substr (s, e - s);
+  }
+
+  // text content between <tag> and </tag> within s (first occurrence)
+  std::string xml_element (const std::string& s, const std::string& tag)
+  {
+    const size_t o = s.find ("<" + tag + ">");
+    if (o == std::string::npos) return "";
+    const size_t s0 = o + tag.size() + 2;
+    const size_t e = s.find ("</" + tag + ">", s0);
+    return e == std::string::npos ? "" : s.substr (s0, e - s0);
+  }
+
+}
 
 
 namespace MR
@@ -178,7 +254,108 @@ namespace MR
 
     void Mesh::load_gii (const std::string& path)
     {
-      throw Exception ("GIfTI (.gii) support not yet implemented (\"" + path + "\")");
+      // GIfTI: XML container of one or more <DataArray> elements. We extract the
+      // POINTSET (vertices) and TRIANGLE (faces) arrays, decoding ASCII,
+      // Base64Binary or GZipBase64Binary encodings and honouring the stored
+      // endianness. A POINTSET CoordinateSystemTransformMatrix, if present, is
+      // applied to bring vertices into its TransformedSpace.
+      std::ifstream in (path, std::ios_base::in | std::ios_base::binary);
+      if (!in)
+        throw Exception ("Error opening GIfTI file \"" + path + "\"");
+      const std::string xml ((std::istreambuf_iterator<char> (in)), std::istreambuf_iterator<char>());
+
+      auto swap32 = [] (uint32_t v) {
+        return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24);
+      };
+
+      size_t pos = 0;
+      while ((pos = xml.find ("<DataArray", pos)) != std::string::npos) {
+        const size_t tag_end = xml.find ('>', pos);
+        if (tag_end == std::string::npos) break;
+        const std::string tag = xml.substr (pos, tag_end - pos);
+        const size_t da_end = xml.find ("</DataArray>", tag_end);
+        if (da_end == std::string::npos) break;
+        const std::string body = xml.substr (tag_end + 1, da_end - tag_end - 1);
+        pos = da_end + 1;
+
+        const std::string intent = xml_attr (tag, "Intent");
+        const std::string dtype  = xml_attr (tag, "DataType");
+        const std::string enc    = xml_attr (tag, "Encoding");
+        const bool big_endian    = (xml_attr (tag, "Endian") == "BigEndian");
+        size_t dim0 = 0;
+        try { dim0 = to<size_t> (xml_attr (tag, "Dim0")); } catch (...) { continue; }
+
+        const std::string data_text = xml_element (body, "Data");
+        if (data_text.empty()) continue;
+
+        const bool is_ascii = (enc == "ASCII");
+        vector<uint8_t> bytes;
+        if (!is_ascii) {
+          vector<uint8_t> b64 = base64_decode (data_text);
+          bytes = (enc == "GZipBase64Binary") ? zlib_inflate (b64) : std::move (b64);
+        }
+
+        if (intent == "NIFTI_INTENT_POINTSET") {
+          const bool f64 = (dtype == "NIFTI_TYPE_FLOAT64");
+          if (!is_ascii && bytes.size() < dim0 * (f64 ? 24 : 12))
+            throw Exception ("GIfTI POINTSET array smaller than declared in \"" + path + "\"");
+          VertexList verts;
+          verts.reserve (dim0);
+          if (is_ascii) {
+            std::istringstream ss (data_text);
+            for (size_t i = 0; i != dim0; ++i) { double x, y, z; ss >> x >> y >> z; verts.push_back (Vertex (x, y, z)); }
+          } else if (f64) {
+            for (size_t i = 0; i != dim0; ++i) {
+              double v[3]; memcpy (v, &bytes[24*i], 24);
+              verts.push_back (Vertex (v[0], v[1], v[2]));
+            }
+          } else {
+            for (size_t i = 0; i != dim0; ++i) {
+              uint32_t u[3]; memcpy (u, &bytes[12*i], 12);
+              if (big_endian) for (int k = 0; k != 3; ++k) u[k] = swap32 (u[k]);
+              float f[3]; memcpy (f, u, 12);
+              verts.push_back (Vertex (f[0], f[1], f[2]));
+            }
+          }
+          // optional coordinate-system transform (row-major 4x4)
+          const std::string mat = xml_element (body, "MatrixData");
+          if (!mat.empty()) {
+            std::istringstream ss (mat);
+            double m[16]; bool ok = true;
+            for (int i = 0; i != 16 && ok; ++i) ok = bool (ss >> m[i]);
+            if (ok) {
+              for (auto& vx : verts) {
+                const double x = vx[0], y = vx[1], z = vx[2];
+                vx = Vertex (m[0]*x + m[1]*y + m[2]*z + m[3],
+                             m[4]*x + m[5]*y + m[6]*z + m[7],
+                             m[8]*x + m[9]*y + m[10]*z + m[11]);
+              }
+            }
+          }
+          for (const auto& vx : verts) vertices.push_back (vx);
+        }
+        else if (intent == "NIFTI_INTENT_TRIANGLE") {
+          if (!is_ascii && bytes.size() < dim0 * 12)
+            throw Exception ("GIfTI TRIANGLE array smaller than declared in \"" + path + "\"");
+          if (is_ascii) {
+            std::istringstream ss (data_text);
+            for (size_t i = 0; i != dim0; ++i) {
+              uint32_t a, b, c; ss >> a >> b >> c;
+              vector<uint32_t> t { a, b, c }; triangles.push_back (Triangle (t));
+            }
+          } else {
+            for (size_t i = 0; i != dim0; ++i) {
+              uint32_t u[3]; memcpy (u, &bytes[12*i], 12);
+              if (big_endian) for (int k = 0; k != 3; ++k) u[k] = swap32 (u[k]);
+              vector<uint32_t> t { u[0], u[1], u[2] }; triangles.push_back (Triangle (t));
+            }
+          }
+        }
+      }
+
+      if (vertices.empty())
+        throw Exception ("no vertices found in GIfTI file \"" + path + "\"");
+      verify_data();
     }
 
 
