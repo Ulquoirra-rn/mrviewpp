@@ -80,6 +80,7 @@ namespace MR
             void colour_changed ();
             void opacity_changed (int unused);
             void model_rows_changed ();
+            void grow_cut_slot ();
 
           protected:
              QPushButton *hide_all_button, *close_button, *save_button;

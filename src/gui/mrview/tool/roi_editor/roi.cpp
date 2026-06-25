@@ -15,11 +15,16 @@
  */
 
 #include <string>
+#include <limits>
 
 #include "gui/mrview/tool/roi_editor/roi.h"
 
 #include "header.h"
+#include "image.h"
+#include "datatype.h"
+#include "progressbar.h"
 #include "gui/cursor.h"
+#include "gui/mrview/gui_image.h"
 #include "gui/projection.h"
 #include "gui/dialog/file.h"
 
@@ -96,6 +101,12 @@ namespace MR
           connect (list_model, SIGNAL (rowsInserted(const QModelIndex&, int, int)), this, SLOT (model_rows_changed ()));
 
           main_box->addWidget (list_view, 1);
+
+          QPushButton* grow_cut_button = new QPushButton (tr ("Grow-cut from ROIs"), this);
+          grow_cut_button->setToolTip (tr ("Use the painted ROIs as seeds (one region per ROI) and grow-cut "
+                                           "segment the current image; results are added as new ROIs"));
+          connect (grow_cut_button, SIGNAL (clicked()), this, SLOT (grow_cut_slot ()));
+          main_box->addWidget (grow_cut_button, 0);
 
           GridLayout* grid_layout = new GridLayout;
 
@@ -365,6 +376,151 @@ namespace MR
             E.display();
           }
           in_insert_mode = false;
+        }
+
+
+
+        // Grow-cut segmentation (Vezhnevets & Konouchine, 2005) driven from the
+        // painted ROIs: each ROI becomes one seed region, the current image is the
+        // intensity, and the grown regions are added back as new ROIs. Same
+        // cellular-automaton as the mrgrowcut command.
+        void ROI::grow_cut_slot ()
+        {
+          if (!window().image()) {
+            QMessageBox::warning (this, "Grow-cut", "Load an image first to use as the intensity for grow-cut.");
+            return;
+          }
+
+          // Gather the painted ROIs as seed regions.
+          vector<ROI_Item*> seeds;
+          for (size_t i = 0; i < list_model->items.size(); ++i) {
+            ROI_Item* r = dynamic_cast<ROI_Item*> (list_model->items[i].get());
+            if (r)
+              seeds.push_back (r);
+          }
+          if (seeds.size() < 2) {
+            QMessageBox::warning (this, "Grow-cut",
+                "Paint at least two ROIs first — one per region to segment (e.g. one foreground, one background).");
+            return;
+          }
+
+          // Working grid = the current image.
+          MR::Image<cfloat> in (window().image()->image);
+          const ssize_t nx = in.size(0), ny = in.size(1), nz = in.size(2);
+          const size_t N = size_t(nx) * ny * nz;
+          auto idx = [&] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
+
+          // Read intensities (first volume) into a flat buffer + find the range.
+          vector<float> intensity (N);
+          float vmin = std::numeric_limits<float>::infinity();
+          float vmax = -std::numeric_limits<float>::infinity();
+          if (in.ndim() > 3) in.index(3) = 0;
+          for (ssize_t z = 0; z != nz; ++z) { in.index(2) = z;
+            for (ssize_t y = 0; y != ny; ++y) { in.index(1) = y;
+              for (ssize_t x = 0; x != nx; ++x) { in.index(0) = x;
+                const cfloat cv = in.value();
+                const float v = cv.real();
+                intensity[idx(x,y,z)] = v;
+                if (std::isfinite (v)) { vmin = std::min (vmin, v); vmax = std::max (vmax, v); }
+              }
+            }
+          }
+          const float range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
+
+          // Read each ROI texture and assign its label to painted voxels.
+          vector<uint32_t> label (N, 0);
+          vector<float> strength (N, 0.0f);
+          size_t mismatched = 0;
+          {
+            GL::Context::Grab context;
+            GL::assert_context_is_current();
+            for (size_t s = 0; s < seeds.size(); ++s) {
+              ROI_Item* r = seeds[s];
+              if (r->header().size(0) != nx || r->header().size(1) != ny || r->header().size(2) != nz) {
+                ++mismatched;
+                continue;
+              }
+              vector<GLubyte> data (N);
+              r->texture().bind();
+              gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
+              gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&data[0]));
+              const uint32_t lab = uint32_t (s + 1);
+              for (size_t i = 0; i < N; ++i) {
+                if (data[i]) { label[i] = lab; strength[i] = 1.0f; }
+              }
+            }
+          }
+          if (mismatched)
+            WARN (str(mismatched) + " ROI(s) skipped for grow-cut (dimensions do not match the current image)");
+
+          // 6-connected synchronous cellular automaton.
+          const int dx[6] = { 1, -1, 0, 0, 0, 0 };
+          const int dy[6] = { 0, 0, 1, -1, 0, 0 };
+          const int dz[6] = { 0, 0, 0, 0, 1, -1 };
+          vector<uint32_t> next_label (label);
+          vector<float> next_strength (strength);
+          {
+            ProgressBar progress ("performing grow-cut segmentation");
+            bool changed = true;
+            for (int iter = 0; iter != 1000 && changed; ++iter) {
+              changed = false;
+              for (ssize_t z = 0; z != nz; ++z) {
+                for (ssize_t y = 0; y != ny; ++y) {
+                  for (ssize_t x = 0; x != nx; ++x) {
+                    const size_t p = idx(x,y,z);
+                    uint32_t best_label = label[p];
+                    float best_strength = strength[p];
+                    const float cp = intensity[p];
+                    for (int n = 0; n != 6; ++n) {
+                      const ssize_t qx = x+dx[n], qy = y+dy[n], qz = z+dz[n];
+                      if (qx < 0 || qy < 0 || qz < 0 || qx >= nx || qy >= ny || qz >= nz)
+                        continue;
+                      const size_t q = idx(qx,qy,qz);
+                      if (strength[q] <= best_strength)
+                        continue;
+                      const float g = 1.0f - std::abs (cp - intensity[q]) / range;
+                      const float attack = g * strength[q];
+                      if (attack > best_strength) {
+                        best_strength = attack;
+                        best_label = label[q];
+                      }
+                    }
+                    next_label[p] = best_label;
+                    next_strength[p] = best_strength;
+                    if (best_label != label[p])
+                      changed = true;
+                  }
+                }
+              }
+              label.swap (next_label);
+              strength.swap (next_strength);
+              ++progress;
+            }
+          }
+
+          // Add one new ROI per seed region, holding that region's grown mask.
+          const size_t n_regions = seeds.size();
+          for (size_t s = 0; s < n_regions; ++s) {
+            const uint32_t lab = uint32_t (s + 1);
+            MR::Header H (window().image()->header());
+            list_model->create (std::move (H));
+            ROI_Item* out = dynamic_cast<ROI_Item*> (list_model->items.back().get());
+            if (!out)
+              continue;
+            GL::Context::Grab context;
+            GL::assert_context_is_current();
+            out->bind();
+            gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+            vector<GLubyte> slice (size_t(nx) * ny);
+            for (ssize_t z = 0; z != nz; ++z) {
+              for (ssize_t y = 0; y != ny; ++y)
+                for (ssize_t x = 0; x != nx; ++x)
+                  slice[size_t(x) + nx*y] = (label[idx(x,y,z)] == lab) ? 1 : 0;
+              out->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
+            }
+          }
+
+          updateGL();
         }
 
 
