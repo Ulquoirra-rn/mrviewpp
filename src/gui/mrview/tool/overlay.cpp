@@ -626,9 +626,11 @@ namespace MR
           if (image_list_view->selectionModel()->selectedIndexes().empty() || thr_hi <= thr_lo)
             return;
           const float value = thr_lo + (pos / 1000.0f) * (thr_hi - thr_lo);
+          lower_threshold->setValue (value);   // AdjustButton::setValue does NOT emit valueChanged
           if (!lower_threshold_check_box->isChecked())
-            lower_threshold_check_box->setChecked (true);
-          lower_threshold->setValue (value);
+            lower_threshold_check_box->setChecked (true);   // -> lower_threshold_changed applies the value
+          else
+            lower_threshold_value_changed();                // already enabled: apply the new value
         }
 
 
@@ -638,9 +640,11 @@ namespace MR
           if (image_list_view->selectionModel()->selectedIndexes().empty() || thr_hi <= thr_lo)
             return;
           const float value = thr_lo + (pos / 1000.0f) * (thr_hi - thr_lo);
+          upper_threshold->setValue (value);
           if (!upper_threshold_check_box->isChecked())
             upper_threshold_check_box->setChecked (true);
-          upper_threshold->setValue (value);
+          else
+            upper_threshold_value_changed();
         }
 
 
