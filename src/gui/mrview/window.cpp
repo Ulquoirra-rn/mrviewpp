@@ -1766,6 +1766,15 @@ namespace MR
         if (delta.isNull())
           return;
 
+        // Let a focused tool intercept the wheel (e.g. ROI region-grow on scroll):
+        if (image() && tool_has_focus) {
+          grab_mouse_state (event);
+          if (modifiers_ == Qt::NoModifier && tool_has_focus->mouse_wheel_event (delta.x(), delta.y())) {
+            event->accept();
+            return;
+          }
+        }
+
         if (delta.y()) {
 
           if (image()) {

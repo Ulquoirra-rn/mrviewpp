@@ -61,6 +61,7 @@ namespace MR
             virtual bool mouse_press_event () override;
             virtual bool mouse_move_event () override;
             virtual bool mouse_release_event () override;
+            virtual bool mouse_wheel_event (int delta_x, int delta_y) override;
             virtual QCursor* get_cursor () override;
 
           private slots:
@@ -86,7 +87,7 @@ namespace MR
           protected:
              QPushButton *hide_all_button, *close_button, *save_button;
              QToolButton *draw_button, *undo_button, *redo_button;
-             QToolButton *brush_button, *rectangle_button, *fill_button;
+             QToolButton *brush_button, *rectangle_button, *fill_button, *grow_mode_button;
              QToolButton *copy_from_above_button, *copy_from_below_button;
              QActionGroup *edit_mode_group, *slice_copy_group;
              ROI_Model* list_model;
@@ -110,6 +111,16 @@ namespace MR
 
              void load (vector<std::unique_ptr<MR::Header>>& list);
              void save (ROI_Item*);
+
+             // Interactive scroll-driven 2D region-grow state:
+             bool grow_active;
+             const void* grow_image_id;
+             int grow_axis;
+             ssize_t grow_slice, grow_seed_u, grow_seed_v;
+             float grow_seed_value, grow_tol, grow_range;
+             vector<float> grow_intensity;
+             vector<GLubyte> grow_base;
+             void apply_grow (ROI_Item* roi, bool with_region);
 
              int normal2axis (const Eigen::Vector3f&, const ROI_Item&) const;
 

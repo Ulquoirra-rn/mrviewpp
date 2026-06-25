@@ -43,7 +43,9 @@ namespace MR
 
         ROI::ROI (Dock* parent) :
             Base (parent),
-            in_insert_mode (false)
+            in_insert_mode (false),
+            grow_active (false),
+            grow_image_id (nullptr)
         {
 
           VBoxLayout* main_box = new VBoxLayout (this);
@@ -114,8 +116,8 @@ namespace MR
           main_box->addWidget (grow_cut_button, 0);
 
           HBoxLayout* region_grow_layout = new HBoxLayout;
-          QPushButton* region_grow_button = new QPushButton (tr ("Region grow"), this);
-          region_grow_button->setToolTip (tr ("Grow the selected ROI seed to all connected voxels whose "
+          QPushButton* region_grow_button = new QPushButton (tr ("Region grow (3D)"), this);
+          region_grow_button->setToolTip (tr ("Grow the selected ROI seed in 3D to all connected voxels whose "
                                               "intensity is within the tolerance of the seed's mean intensity"));
           connect (region_grow_button, SIGNAL (clicked()), this, SLOT (region_grow_slot ()));
           region_grow_layout->addWidget (region_grow_button, 1);
@@ -220,6 +222,18 @@ namespace MR
           edit_mode_group->addAction (action);
           rectangle_button->setDefaultAction (action);
           grid_layout->addWidget (rectangle_button, 1, 2, 1, 2);
+
+          grow_mode_button = new QToolButton (this);
+          grow_mode_button->setToolButtonStyle (Qt::ToolButtonTextBesideIcon);
+          grow_mode_button->setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Preferred);
+          action = new QAction (QIcon (":/fill.svg"), tr ("Region grow"), this);
+          action->setToolTip (tr ("Scroll over the image to grow a 2D region from the voxel under the cursor "
+                                  "(scroll = adjust tolerance); left-click to commit it into the selected ROI"));
+          action->setCheckable (true);
+          action->setChecked (false);
+          edit_mode_group->addAction (action);
+          grow_mode_button->setDefaultAction (action);
+          grid_layout->addWidget (grow_mode_button, 2, 0, 1, 4);
 
           main_box->addWidget (group_box, 0);
 
@@ -670,6 +684,154 @@ namespace MR
 
 
 
+        // Build the 2D grown region on the active slice (if with_region) and upload
+        // base | region to the ROI texture; with_region == false restores the base.
+        void ROI::apply_grow (ROI_Item* roi, bool with_region)
+        {
+          const ssize_t nx = roi->header().size(0), ny = roi->header().size(1), nz = roi->header().size(2);
+          auto idx = [&] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
+          const int axis = grow_axis;
+          const ssize_t slice = grow_slice;
+          const int u = (axis == 0) ? 1 : 0;
+          const int v = (axis == 2) ? 1 : 2;
+          const ssize_t su = roi->header().size(u), sv = roi->header().size(v);
+          auto full = [&] (ssize_t i, ssize_t j) { ssize_t c[3]; c[axis] = slice; c[u] = i; c[v] = j; return idx (c[0], c[1], c[2]); };
+
+          vector<char> reg;
+          if (with_region) {
+            reg.assign (size_t(su) * sv, 0);
+            vector<std::pair<ssize_t,ssize_t>> q;
+            reg[grow_seed_u + su * grow_seed_v] = 1;
+            q.push_back ({ grow_seed_u, grow_seed_v });
+            const int di[4] = { 1, -1, 0, 0 };
+            const int dj[4] = { 0, 0, 1, -1 };
+            for (size_t h = 0; h < q.size(); ++h) {
+              const ssize_t ci = q[h].first, cj = q[h].second;
+              for (int k = 0; k < 4; ++k) {
+                const ssize_t ni = ci + di[k], nj = cj + dj[k];
+                if (ni < 0 || nj < 0 || ni >= su || nj >= sv)
+                  continue;
+                char& cell = reg[ni + su * nj];
+                if (cell)
+                  continue;
+                if (std::abs (grow_intensity[full(ni,nj)] - grow_seed_value) <= grow_tol) {
+                  cell = 1;
+                  q.push_back ({ ni, nj });
+                }
+              }
+            }
+          }
+
+          vector<GLubyte> buf (size_t(su) * sv);
+          for (ssize_t j = 0; j < sv; ++j)
+            for (ssize_t i = 0; i < su; ++i) {
+              const GLubyte base = grow_base[full(i,j)];
+              const GLubyte r = (with_region && reg[i + su * j]) ? 1 : 0;
+              buf[i + su * j] = (base || r) ? 1 : 0;
+            }
+
+          const std::array<ssize_t,3> off { { axis==0 ? slice : 0, axis==1 ? slice : 0, axis==2 ? slice : 0 } };
+          const std::array<ssize_t,3> sz  { { axis==0 ? ssize_t(1) : nx, axis==1 ? ssize_t(1) : ny, axis==2 ? ssize_t(1) : nz } };
+          GL::Context::Grab context;
+          GL::assert_context_is_current();
+          roi->bind();
+          gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+          roi->upload_data (off, sz, reinterpret_cast<void*> (buf.data()));
+        }
+
+
+
+        bool ROI::mouse_wheel_event (int /*delta_x*/, int delta_y)
+        {
+          if (!grow_mode_button->isChecked() || delta_y == 0 || !window().image())
+            return false;
+
+          QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
+          if (indices.size() != 1)
+            return false;
+          ROI_Item* roi = dynamic_cast<ROI_Item*> (list_model->get (indices[0]));
+          if (!roi)
+            return false;
+
+          const Projection* proj = window().get_current_mode()->get_current_projection();
+          if (!proj)
+            return false;
+
+          MR::Image<cfloat> img (window().image()->image);
+          const ssize_t nx = img.size(0), ny = img.size(1), nz = img.size(2);
+          if (roi->header().size(0) != nx || roi->header().size(1) != ny || roi->header().size(2) != nz)
+            return false;
+          auto idx = [&] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
+
+          // Voxel under the cursor.
+          const Eigen::Vector3f origin = proj->screen_to_model (window().mouse_position(), window().focus());
+          const int axis = normal2axis (proj->screen_normal(), *roi);
+          const auto voxf = roi->scanner2voxel() * origin;
+          const ssize_t sx = std::lround (voxf[0]), sy = std::lround (voxf[1]), sz = std::lround (voxf[2]);
+          if (sx < 0 || sy < 0 || sz < 0 || sx >= nx || sy >= ny || sz >= nz)
+            return false;
+
+          const int u = (axis == 0) ? 1 : 0;
+          const int v = (axis == 2) ? 1 : 2;
+          const ssize_t coord[3] = { sx, sy, sz };
+          const ssize_t slice = coord[axis];
+          const ssize_t seed_u = coord[u], seed_v = coord[v];
+
+          const bool new_gesture = (!grow_active || axis != grow_axis || slice != grow_slice ||
+                                    seed_u != grow_seed_u || seed_v != grow_seed_v);
+          if (new_gesture) {
+            if (grow_active)
+              apply_grow (roi, false);   // discard previous uncommitted preview
+
+            const size_t N = size_t(nx) * ny * nz;
+            if (grow_image_id != (const void*) window().image() || grow_intensity.size() != N) {
+              grow_intensity.resize (N);
+              if (img.ndim() > 3) img.index(3) = 0;
+              float vmin = std::numeric_limits<float>::infinity();
+              float vmax = -std::numeric_limits<float>::infinity();
+              for (ssize_t z = 0; z != nz; ++z) { img.index(2) = z;
+                for (ssize_t y = 0; y != ny; ++y) { img.index(1) = y;
+                  for (ssize_t x = 0; x != nx; ++x) { img.index(0) = x;
+                    const cfloat cv = img.value();
+                    const float val = cv.real();
+                    grow_intensity[idx(x,y,z)] = val;
+                    if (std::isfinite (val)) { vmin = std::min (vmin, val); vmax = std::max (vmax, val); }
+                  }
+                }
+              }
+              grow_range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
+              grow_image_id = (const void*) window().image();
+            }
+
+            grow_base.resize (N);
+            {
+              GL::Context::Grab context;
+              GL::assert_context_is_current();
+              roi->texture().bind();
+              gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
+              gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&grow_base[0]));
+            }
+
+            grow_axis = axis; grow_slice = slice; grow_seed_u = seed_u; grow_seed_v = seed_v;
+            grow_seed_value = grow_intensity[idx(sx,sy,sz)];
+            const float pct = std::isfinite (tolerance_button->value()) ? tolerance_button->value() : 10.0f;
+            grow_tol = (pct / 100.0f) * grow_range;
+            grow_active = true;
+          }
+          else {
+            const float factor = (delta_y > 0) ? 1.15f : (1.0f / 1.15f);
+            grow_tol *= factor;
+            if (grow_tol < 1e-6f * grow_range)
+              grow_tol = 1e-6f * grow_range;
+          }
+
+          apply_grow (roi, true);
+          updateGL();
+          return true;
+        }
+
+
+
 
 
         int ROI::normal2axis (const Eigen::Vector3f& normal, const ROI_Item& roi) const
@@ -834,6 +996,15 @@ namespace MR
         void ROI::select_edit_mode (QAction*)
         {
           brush_size_button->setEnabled (brush_button->isChecked());
+          // Discard any uncommitted region-grow preview when leaving grow mode.
+          if (grow_active && !grow_mode_button->isChecked()) {
+            QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
+            if (indices.size() == 1)
+              if (ROI_Item* roi = dynamic_cast<ROI_Item*> (list_model->get (indices[0])))
+                apply_grow (roi, false);
+            grow_active = false;
+            updateGL();
+          }
         }
 
 
@@ -1034,6 +1205,22 @@ namespace MR
 
         bool ROI::mouse_press_event ()
         {
+          // In region-grow mode a left-click commits the current live preview into
+          // the selected ROI (and consumes the click so it does not paint).
+          if (grow_mode_button->isChecked()) {
+            if (window().mouse_buttons() == Qt::LeftButton) {
+              if (grow_active) {
+                QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
+                if (indices.size() == 1)
+                  if (ROI_Item* roi = dynamic_cast<ROI_Item*> (list_model->get (indices[0])))
+                    roi->saved = false;
+                grow_active = false;
+              }
+              return true;
+            }
+            return false;
+          }
+
           if (in_insert_mode || window().modifiers() != Qt::NoModifier)
             return false;
 

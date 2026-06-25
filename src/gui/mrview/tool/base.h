@@ -157,6 +157,9 @@ namespace MR
             virtual bool mouse_press_event ();
             virtual bool mouse_move_event ();
             virtual bool mouse_release_event ();
+            // Wheel/scroll over the GL area while this tool has focus. Return true
+            // to consume the event (otherwise it falls through to slice scrolling).
+            virtual bool mouse_wheel_event (int /*delta_x*/, int /*delta_y*/) { return false; }
             virtual void close_event() { }
             virtual void reset_event () { }
             virtual QCursor* get_cursor ();
