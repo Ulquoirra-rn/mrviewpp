@@ -21,6 +21,7 @@
 #include "file/path.h"
 #include "dwi/tractography/file.h"
 #include "dwi/tractography/file_trk.h"
+#include "dwi/tractography/file_trx.h"
 #include "dwi/tractography/properties.h"
 #include "dwi/tractography/scalar_file.h"
 #include "gui/opengl/lighting.h"
@@ -627,6 +628,8 @@ namespace MR
           std::unique_ptr<DWI::Tractography::ReaderInterface<float>> file;
           if (Path::has_suffix (filename, ".trk"))
             file.reset (new DWI::Tractography::TRKReader<float> (filename, properties));
+          else if (Path::has_suffix (filename, ".trx"))
+            file.reset (new DWI::Tractography::TRXReader<float> (filename, properties));
           else
             file.reset (new DWI::Tractography::Reader<float> (filename, properties));
           DWI::Tractography::Streamline<float> tck;
