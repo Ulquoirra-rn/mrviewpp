@@ -499,6 +499,8 @@ namespace MR
           }
 
           // Add one new ROI per seed region, holding that region's grown mask.
+          // (Appended after the seed ROIs, which are removed further below.)
+          const size_t n_seeds = seeds.size();
           const size_t n_regions = seeds.size();
           for (size_t s = 0; s < n_regions; ++s) {
             const uint32_t lab = uint32_t (s + 1);
@@ -518,6 +520,13 @@ namespace MR
                   slice[size_t(x) + nx*y] = (label[idx(x,y,z)] == lab) ? 1 : 0;
               out->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
             }
+          }
+
+          // Replace the seeds with the segmentation: remove the original seed
+          // ROIs (the first n_seeds rows; results were appended after them).
+          for (size_t s = 0; s < n_seeds; ++s) {
+            QModelIndex first = list_model->index (0, 0);
+            list_model->remove_item (first);
           }
 
           updateGL();
