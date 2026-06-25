@@ -55,18 +55,19 @@ namespace MR
         const QColor on_primary = pal.color (QPalette::HighlightedText);
         const bool dark         = window.lightnessF() < 0.5;
         const QColor hover      = dark ? surface.lighter (135) : surface.darker (108);
-        const QColor outline    = mix (window, text, 0.28);
+        const QColor outline    = mix (window, text, 0.42);
 
         QString s;
         s += "* { outline: 0; }\n";
         s += QString ("QToolTip { background:%1; color:%2; border:1px solid %3; border-radius:6px; padding:4px 6px; }\n")
                 .arg (hex(surface), hex(text), hex(outline));
         s += QString ("QToolBar { background:%1; border:0; spacing:4px; padding:3px; }\n").arg (hex(window));
-        s += QString ("QPushButton { background:%1; color:%2; border:0; border-radius:14px; padding:6px 14px; }\n"
-                      "QPushButton:hover { background:%3; }\n"
-                      "QPushButton:pressed, QPushButton:checked { background:%4; color:%5; }\n"
-                      "QPushButton:disabled { color:%6; background:%1; }\n")
-                .arg (hex(surface), hex(text), hex(hover), hex(primary), hex(on_primary), hex(muted));
+        s += QString ("QPushButton { background:%1; color:%2; border:1px solid %7; border-radius:10px; padding:4px 10px; }\n"
+                      "QPushButton:hover { background:%3; border-color:%4; }\n"
+                      "QPushButton:pressed, QPushButton:checked { background:%4; color:%5; border-color:%4; }\n"
+                      "QPushButton:disabled { color:%6; background:%1; border-color:%7; }\n"
+                      "QPushButton#batchbtn { padding:2px 6px; font-size:11px; border-radius:8px; }\n")
+                .arg (hex(surface), hex(text), hex(hover), hex(primary), hex(on_primary), hex(muted), hex(outline));
         s += QString ("QToolButton { background:transparent; border:0; border-radius:8px; padding:5px; }\n"
                       "QToolButton:hover { background:%1; }\n"
                       "QToolButton:checked, QToolButton:pressed { background:%2; color:%3; }\n")
