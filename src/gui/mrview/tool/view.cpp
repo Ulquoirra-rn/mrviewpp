@@ -18,6 +18,8 @@
 
 #include "mrtrix.h"
 #include "math/math.h"
+#include "file/config.h"
+#include "gui/gui.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/mode/volume.h"
 #include "gui/mrview/mode/lightbox_gui.h"
@@ -177,6 +179,26 @@ namespace MR
           hlayout->addWidget (hide_button, 1);
 
           main_box->addLayout (hlayout, 0);
+
+          // Theme selector
+          QGroupBox* theme_box = new QGroupBox ("Theme");
+          main_box->addWidget (theme_box);
+          HBoxLayout* theme_layout = new HBoxLayout;
+          theme_box->setLayout (theme_layout);
+          theme_combobox = new QComboBox (this);
+          {
+            const std::vector<std::string> names = MR::GUI::gui_theme_names();
+            const std::string current = MR::File::Config::get ("GUITheme", "Dark");
+            int cur_index = 0;
+            for (size_t i = 0; i < names.size(); ++i) {
+              theme_combobox->addItem (qstr (names[i]));
+              if (names[i] == current)
+                cur_index = int(i);
+            }
+            theme_combobox->setCurrentIndex (cur_index);
+          }
+          connect (theme_combobox, SIGNAL (activated(int)), this, SLOT (onThemeChanged(int)));
+          theme_layout->addWidget (theme_combobox, 1);
 
           // FoV
           QGroupBox* group_box = new QGroupBox ("FOV");
@@ -519,6 +541,18 @@ namespace MR
         void View::closeEvent (QCloseEvent*)
         {
           window().disconnect (this);
+        }
+
+
+
+        void View::onThemeChanged (int index)
+        {
+          if (index < 0)
+            return;
+          const std::string name = theme_combobox->itemText (index).toStdString();
+          MR::File::Config::set ("GUITheme", name);
+          MR::GUI::set_gui_theme (name);
+          window().updateGL();
         }
 
 
