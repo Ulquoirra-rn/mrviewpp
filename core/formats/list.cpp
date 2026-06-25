@@ -39,6 +39,7 @@ namespace MR
     DICOM         dicom_handler;
     MGH           mgh_handler;
     MGZ           mgz_handler;
+    NRRD          nrrd_handler;
 #ifdef MRTRIX_TIFF_SUPPORT
     TIFF          tiff_handler;
 #endif
@@ -65,6 +66,7 @@ namespace MR
       &xds_handler,
       &mgh_handler,
       &mgz_handler,
+      &nrrd_handler,
 #ifdef MRTRIX_TIFF_SUPPORT
       &tiff_handler,
 #endif
@@ -91,6 +93,8 @@ namespace MR
       ".mgh",
       ".mgz",
       ".mgh.gz",
+      ".nrrd",
+      ".nhdr",
       ".msf",
       ".msh",
       ".dcm",
