@@ -18,6 +18,7 @@
 #include "command.h"
 #include "progressbar.h"
 #include "memory.h"
+#include "file/config.h"
 #include "gui/mrview/icons.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/file_open.h"
@@ -90,7 +91,18 @@ void usage ()
 void run ()
 {
   GUI::MRView::Window window;
-  MR::GUI::MRView::Sync::SyncManager sync;//sync allows syncing between mrview windows in different processes
+  // sync allows syncing focus/view between mrview windows in different processes.
+  // It is OFF by default: it relies on a system semaphore, and a process that
+  // exits uncleanly (crash / force-kill) can leave a stale lock that makes every
+  // subsequent mrview launch hang at startup. Enable with MRViewSyncProcesses.
+  //CONF option: MRViewSyncProcesses
+  //CONF default: 0 (false)
+  //CONF Enable syncing of focus/view between separate MRView processes. Uses a
+  //CONF system semaphore; disabled by default to avoid a stale lock hanging
+  //CONF startup if a process exits uncleanly.
+  std::unique_ptr<MR::GUI::MRView::Sync::SyncManager> sync;
+  if (File::Config::get_bool ("MRViewSyncProcesses", false))
+    sync.reset (new MR::GUI::MRView::Sync::SyncManager);
   window.show();
   try {
     window.parse_arguments();
