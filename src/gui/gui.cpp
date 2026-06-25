@@ -172,12 +172,13 @@ namespace MR
         }
       }
 
-      // Apply the Material-Design widget stylesheet, derived from (and so keeping)
-      // the active colour theme — i.e. the style's default palette.
+      // Optional Material-Design widget stylesheet (rounded pills, accent
+      // selection, etc.). Off by default to keep the standard mrview look
+      // (plain Fusion widgets, solid highlight selections); enable explicitly.
       //CONF option: GUIMaterialStyle
-      //CONF default: 1 (true)
+      //CONF default: 0 (false)
       //CONF Whether to apply the Material-Design widget stylesheet in the GUI.
-      if (MR::File::Config::get_bool ("GUIMaterialStyle", true))
+      if (MR::File::Config::get_bool ("GUIMaterialStyle", false))
         setStyleSheet (material_stylesheet (palette()));
     }
 
