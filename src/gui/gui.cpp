@@ -154,6 +154,24 @@ namespace MR
         }
       }
 
+      // Liven up the accent colour: the style's default Highlight can look dull
+      // and washed-out. Override Highlight/HighlightedText (everything else stays
+      // the default theme); the Material stylesheet derives its accent from this.
+      //CONF option: GUIAccentColour
+      //CONF default: #4f9cf9
+      //CONF The accent/highlight colour used by the GUI (any #rrggbb value).
+      {
+        const QColor accent (qstr (MR::File::Config::get ("GUIAccentColour", "#4f9cf9")));
+        if (accent.isValid()) {
+          QPalette p = palette();
+          p.setColor (QPalette::Active,   QPalette::Highlight, accent);
+          p.setColor (QPalette::Inactive, QPalette::Highlight, accent);
+          p.setColor (QPalette::Active,   QPalette::HighlightedText, QColor ("#ffffff"));
+          p.setColor (QPalette::Inactive, QPalette::HighlightedText, QColor ("#ffffff"));
+          setPalette (p);
+        }
+      }
+
       // Apply the Material-Design widget stylesheet, derived from (and so keeping)
       // the active colour theme — i.e. the style's default palette.
       //CONF option: GUIMaterialStyle

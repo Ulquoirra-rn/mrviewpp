@@ -15,6 +15,7 @@
  */
 
 #include "mrtrix.h"
+#include "file/path.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/tool/tractography/tractography.h"
 #include "gui/dialog/file.h"
@@ -73,6 +74,25 @@ namespace MR
                 Tractogram* tractogram = new Tractogram (tractography_tool, filenames[i]);
                 try {
                   tractogram->load_tracks();
+                  // Auto-load a same-named sidecar scalar file (.txt or .tsf) in the
+                  // same folder as the per-streamline threshold, if present.
+                  {
+                    const size_t dot = filenames[i].find_last_of ('.');
+                    const std::string stem = (dot == std::string::npos) ? filenames[i] : filenames[i].substr (0, dot);
+                    std::string sidecar;
+                    if (Path::exists (stem + ".txt"))      sidecar = stem + ".txt";
+                    else if (Path::exists (stem + ".tsf"))  sidecar = stem + ".tsf";
+                    if (sidecar.size()) {
+                      try {
+                        tractogram->load_threshold_track_scalars (sidecar);
+                        tractogram->threshold_scalar_filename = sidecar;
+                        tractogram->set_threshold_type (TrackThresholdType::SeparateFile);
+                        INFO ("auto-loaded tract threshold scalar \"" + sidecar + "\"");
+                      } catch (Exception& e) {
+                        e.display();
+                      }
+                    }
+                  }
                   beginInsertRows (QModelIndex(), items.size(), items.size() + 1);
                   items.push_back (std::unique_ptr<Displayable> (tractogram));
                   endInsertRows();
