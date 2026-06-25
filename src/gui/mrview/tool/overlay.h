@@ -75,7 +75,6 @@ namespace MR
             void upper_threshold_value_changed ();
             void lower_threshold_value_changed ();
             void lower_threshold_slider_slot (int value);
-            void upper_threshold_slider_slot (int value);
             void opacity_changed (int unused);
             void interpolate_changed ();
 
@@ -101,7 +100,7 @@ namespace MR
              ColourMapButton* colourmap_button;
              AdjustButton *min_value, *max_value, *lower_threshold, *upper_threshold;
              QCheckBox *lower_threshold_check_box, *upper_threshold_check_box;
-             QSlider *lower_threshold_slider, *upper_threshold_slider;
+             QSlider *lower_threshold_slider;
              float thr_lo, thr_hi;
              void sync_threshold_sliders ();
              InterpolateCheckBox* interpolate_check_box;

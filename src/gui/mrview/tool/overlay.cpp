@@ -167,21 +167,14 @@ namespace MR
             connect (upper_threshold, SIGNAL (valueChanged()), this, SLOT (upper_threshold_value_changed()));
             hlayout->addWidget (upper_threshold);
 
-            // Sliders for the lower/upper thresholds (synced with the exact-value
-            // fields above; the value fields still show/edit the precise number).
+            // A single threshold slider for the lower threshold (synced with the
+            // exact-value field above, which still shows/edits the precise number).
             lower_threshold_slider = new QSlider (Qt::Horizontal);
             lower_threshold_slider->setRange (0, 1000);
-            lower_threshold_slider->setToolTip (tr ("Lower threshold"));
+            lower_threshold_slider->setToolTip (tr ("Threshold"));
             lower_threshold_slider->setEnabled (false);
             connect (lower_threshold_slider, SIGNAL (valueChanged(int)), this, SLOT (lower_threshold_slider_slot(int)));
             threshold_vlayout->addWidget (lower_threshold_slider);
-
-            upper_threshold_slider = new QSlider (Qt::Horizontal);
-            upper_threshold_slider->setRange (0, 1000);
-            upper_threshold_slider->setToolTip (tr ("Upper threshold"));
-            upper_threshold_slider->setEnabled (false);
-            connect (upper_threshold_slider, SIGNAL (valueChanged(int)), this, SLOT (upper_threshold_slider_slot(int)));
-            threshold_vlayout->addWidget (upper_threshold_slider);
 
 
             opacity_slider = new QSlider (Qt::Horizontal);
@@ -635,21 +628,7 @@ namespace MR
 
 
 
-        void Overlay::upper_threshold_slider_slot (int pos)
-        {
-          if (image_list_view->selectionModel()->selectedIndexes().empty() || thr_hi <= thr_lo)
-            return;
-          const float value = thr_lo + (pos / 1000.0f) * (thr_hi - thr_lo);
-          upper_threshold->setValue (value);
-          if (!upper_threshold_check_box->isChecked())
-            upper_threshold_check_box->setChecked (true);
-          else
-            upper_threshold_value_changed();
-        }
-
-
-
-        // Sync slider positions from the exact-value fields (over [thr_lo, thr_hi]).
+        // Sync the slider position from the lower-threshold value (over [thr_lo, thr_hi]).
         void Overlay::sync_threshold_sliders ()
         {
           auto v2p = [&] (float v) -> int {
@@ -660,9 +639,6 @@ namespace MR
           lower_threshold_slider->blockSignals (true);
           lower_threshold_slider->setValue (v2p (lower_threshold->value()));
           lower_threshold_slider->blockSignals (false);
-          upper_threshold_slider->blockSignals (true);
-          upper_threshold_slider->setValue (v2p (upper_threshold->value()));
-          upper_threshold_slider->blockSignals (false);
         }
 
 
@@ -718,7 +694,6 @@ namespace MR
           lower_threshold->setEnabled (indices.size());
           upper_threshold->setEnabled (indices.size());
           lower_threshold_slider->setEnabled (indices.size());
-          upper_threshold_slider->setEnabled (indices.size());
           opacity_slider->setEnabled (indices.size());
           interpolate_check_box->setEnabled (indices.size());
 
