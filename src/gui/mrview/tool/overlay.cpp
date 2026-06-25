@@ -222,6 +222,37 @@ namespace MR
 
 
 
+        void Overlay::get_session (nlohmann::json& node) const
+        {
+          vector<std::string> files;
+          for (size_t i = 0; i < image_list_model->items.size(); ++i) {
+            const Image* im = dynamic_cast<const Image*> (image_list_model->items[i].get());
+            if (im)
+              files.push_back (im->header().name());
+          }
+          node = files;
+        }
+
+
+
+        void Overlay::set_session (const nlohmann::json& node)
+        {
+          if (!node.is_array())
+            return;
+          vector<std::unique_ptr<MR::Header>> headers;
+          for (const auto& f : node) {
+            try {
+              headers.push_back (make_unique<MR::Header> (MR::Header::open (f.get<std::string>())));
+            } catch (Exception& e) {
+              e.display();
+            }
+          }
+          if (headers.size())
+            add_images (headers);
+        }
+
+
+
 
         void Overlay::dropEvent (QDropEvent* event)
         {

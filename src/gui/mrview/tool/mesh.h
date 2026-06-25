@@ -45,6 +45,10 @@ namespace MR
 
             void draw (const Projection& transform, bool is_3D, int axis, int slice) override;
 
+            std::string session_key () const override { return "meshes"; }
+            void get_session (nlohmann::json&) const override;
+            void set_session (const nlohmann::json&) override;
+
           private slots:
             void mesh_open_slot ();
             void mesh_close_slot ();

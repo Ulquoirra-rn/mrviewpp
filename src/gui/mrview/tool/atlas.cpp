@@ -114,6 +114,7 @@ namespace MR
             Mode::Slice::Shader slice_shader;
             std::map<uint32_t, std::string> names;
             std::map<uint32_t, Eigen::Vector3f> centroids;
+            std::string label_path, lut_path;   // retained for session save
 
           private:
             MR::Image<float> labels;
@@ -142,6 +143,8 @@ namespace MR
                 MR::Header scratch = MR::Header::scratch (rgb, "atlas RGB");
 
                 item = new Item (std::move (scratch), label_path, lut);
+                item->label_path = label_path;
+                item->lut_path = lut_path;
                 item->set_allowed_features (true, true, false);
                 item->set_colourmap (ColourMap::index ("RGB"));
                 item->set_use_transparency (true);
@@ -392,6 +395,37 @@ namespace MR
             QListWidgetItem* qitem = new QListWidgetItem (qstr (name), region_list);
             qitem->setData (Qt::UserRole, QVariant (uint (lab)));
           }
+        }
+
+
+
+        void Atlas::get_session (nlohmann::json& node) const
+        {
+          node = nlohmann::json::array();
+          for (size_t i = 0; i < atlas_list_model->items.size(); ++i) {
+            const Item* atlas = dynamic_cast<const Item*> (atlas_list_model->items[i].get());
+            if (atlas)
+              node.push_back ({ { "labels", atlas->label_path }, { "lut", atlas->lut_path } });
+          }
+        }
+
+
+
+        void Atlas::set_session (const nlohmann::json& node)
+        {
+          if (!node.is_array())
+            return;
+          for (const auto& entry : node) {
+            if (entry.find ("labels") == entry.end() || entry.find ("lut") == entry.end())
+              continue;
+            atlas_list_model->add_item (entry["labels"].get<std::string>(),
+                                        entry["lut"].get<std::string>());
+          }
+          if (atlas_list_model->rowCount())
+            atlas_list_view->selectionModel()->select (
+                atlas_list_model->index (atlas_list_model->rowCount()-1, 0),
+                QItemSelectionModel::ClearAndSelect);
+          populate_region_list();
         }
 
 

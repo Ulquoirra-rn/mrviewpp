@@ -18,6 +18,7 @@
 #define __gui_mrview_tool_base_h__
 
 #include "file/config.h"
+#include "file/json.h"
 
 #include "gui/mrview/window.h"
 #include "gui/projection.h"
@@ -160,6 +161,18 @@ namespace MR
             virtual void reset_event () { }
             virtual QCursor* get_cursor ();
             void update_cursor() { window().set_cursor(); }
+
+            // Session persistence hooks (used by the Session tool). A tool that
+            // returns a non-empty session_key() has its state saved/restored;
+            // the json node passed to get_session/set_session is that tool's own.
+            virtual std::string session_key () const { return std::string(); }
+            virtual void get_session (nlohmann::json&) const { }
+            virtual void set_session (const nlohmann::json&) { }
+
+            // Helpers for the main (base) image list; Tool::Base is a friend of
+            // Window, so these reach its private image_group / add_images.
+            vector<std::string> main_image_filenames () const;
+            void load_main_images (const vector<std::string>&);
 
             void dragEnterEvent (QDragEnterEvent* event) override {
               event->acceptProposedAction();

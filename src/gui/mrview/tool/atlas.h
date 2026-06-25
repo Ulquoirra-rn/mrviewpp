@@ -49,6 +49,10 @@ namespace MR
 
             void draw (const Projection& projection, bool is_3D, int axis, int slice) override;
 
+            std::string session_key () const override { return "atlases"; }
+            void get_session (nlohmann::json&) const override;
+            void set_session (const nlohmann::json&) override;
+
           private slots:
             void atlas_open_slot ();
             void atlas_close_slot ();

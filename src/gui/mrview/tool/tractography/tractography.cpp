@@ -383,6 +383,31 @@ namespace MR
 
 
 
+        void Tractography::get_session (nlohmann::json& node) const
+        {
+          vector<std::string> files;
+          for (size_t i = 0; i < tractogram_list_model->items.size(); ++i) {
+            const Displayable* d = tractogram_list_model->items[i].get();
+            if (d)
+              files.push_back (d->get_filename());
+          }
+          node = files;
+        }
+
+
+
+        void Tractography::set_session (const nlohmann::json& node)
+        {
+          if (!node.is_array())
+            return;
+          vector<std::string> files;
+          for (const auto& f : node)
+            files.push_back (f.get<std::string>());
+          add_tractogram (files);
+        }
+
+
+
 
 
         void Tractography::dropEvent (QDropEvent* event)

@@ -15,7 +15,9 @@
  */
 
 #include "app.h"
+#include "header.h"
 #include "gui/mrview/tool/base.h"
+#include "gui/mrview/gui_image.h"
 
 namespace MR
 {
@@ -55,6 +57,33 @@ namespace MR
 
         bool Base::process_commandline_option (const MR::App::ParsedOption&) { return false; }
         void Base::add_commandline_options (MR::App::OptionList&) { }
+
+
+        vector<std::string> Base::main_image_filenames () const
+        {
+          vector<std::string> out;
+          QList<QAction*> list = window().image_group->actions();
+          for (int n = 0; n < list.size(); ++n) {
+            const Image* im = static_cast<const Image*> (list[n]);
+            out.push_back (im->header().name());
+          }
+          return out;
+        }
+
+
+        void Base::load_main_images (const vector<std::string>& paths)
+        {
+          vector<std::unique_ptr<MR::Header>> headers;
+          for (const auto& p : paths) {
+            try {
+              headers.push_back (make_unique<MR::Header> (MR::Header::open (p)));
+            } catch (Exception& e) {
+              e.display();
+            }
+          }
+          if (headers.size())
+            window().add_images (headers);
+        }
 
         void CameraInteractor::deactivate () { }
         bool CameraInteractor::slice_move_event (const ModelViewProjection&, float) { return false; }

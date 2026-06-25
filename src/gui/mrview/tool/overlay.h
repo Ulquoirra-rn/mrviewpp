@@ -56,6 +56,10 @@ namespace MR
             static void add_commandline_options (MR::App::OptionList& options);
             virtual bool process_commandline_option (const MR::App::ParsedOption& opt) override;
 
+            std::string session_key () const override { return "overlays"; }
+            void get_session (nlohmann::json&) const override;
+            void set_session (const nlohmann::json&) override;
+
           private slots:
             void image_open_slot ();
             void image_close_slot ();

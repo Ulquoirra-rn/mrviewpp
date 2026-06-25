@@ -333,6 +333,31 @@ namespace MR
 
 
 
+        void Mesh::get_session (nlohmann::json& node) const
+        {
+          vector<std::string> files;
+          for (size_t i = 0; i < mesh_list_model->items.size(); ++i) {
+            const Displayable* d = mesh_list_model->items[i].get();
+            if (d)
+              files.push_back (d->get_filename());
+          }
+          node = files;
+        }
+
+
+
+        void Mesh::set_session (const nlohmann::json& node)
+        {
+          if (!node.is_array())
+            return;
+          vector<std::string> files;
+          for (const auto& f : node)
+            files.push_back (f.get<std::string>());
+          add_meshes (files);
+        }
+
+
+
         void Mesh::mesh_open_slot ()
         {
           vector<std::string> list = Dialog::File::get_files (this,
