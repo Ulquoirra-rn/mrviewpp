@@ -19,6 +19,7 @@
 
 #include <cinttypes>
 #include <complex>
+#include <cassert>
 #include <cstddef>
 #include <deque>
 #include <map>
@@ -279,15 +280,10 @@ namespace MR
     };
 
 
-  template <typename X, typename... Args>
-    inline std::shared_ptr<X> make_shared (Args&&... args) {
-      return std::shared_ptr<X> (new X (std::forward<Args> (args)...));
-    }
-
-  template <typename X, typename... Args>
-    inline std::unique_ptr<X> make_unique (Args&&... args) {
-      return std::unique_ptr<X> (new X (std::forward<Args> (args)...));
-    }
+  // C++17 provides std::make_shared / std::make_unique; pull them into the MR
+  // namespace so unqualified calls resolve unambiguously (no polyfill shadow).
+  using ::std::make_shared;
+  using ::std::make_unique;
 
 
   // required to allow use of abs() call on unsigned integers in template

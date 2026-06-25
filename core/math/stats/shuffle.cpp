@@ -30,7 +30,15 @@ namespace MR
     namespace Stats
     {
 
-
+      namespace {
+        // std::random_shuffle was removed in C++17; provide an equivalent using
+        // std::shuffle with a thread-local Mersenne Twister.
+        template <class Iterator>
+        inline void random_shuffle (Iterator first, Iterator last) {
+          static thread_local std::mt19937 generator { std::random_device{}() };
+          std::shuffle (first, last, generator);
+        }
+      }
 
       const char* error_types[] = { "ee", "ise", "both", nullptr };
 
@@ -462,7 +470,7 @@ namespace MR
           for (; p != num_perms; ++p) {
             PermuteLabels permuted_labelling (default_labelling);
             do {
-              std::random_shuffle (permuted_labelling.begin(), permuted_labelling.end());
+              random_shuffle (permuted_labelling.begin(), permuted_labelling.end());
             } while (!permit_duplicates && is_duplicate (permuted_labelling));
             permutations.push_back (permuted_labelling);
           }
@@ -481,7 +489,7 @@ namespace MR
               // Random permutation within each block independently
               for (size_t ib = 0; ib != blocks.size(); ++ib) {
                 vector<size_t> permuted_block (blocks[ib]);
-                std::random_shuffle (permuted_block.begin(), permuted_block.end());
+                random_shuffle (permuted_block.begin(), permuted_block.end());
                 for (size_t i = 0; i != permuted_block.size(); ++i)
                   permuted_labelling[blocks[ib][i]] = permuted_block[i];
               }
@@ -505,7 +513,7 @@ namespace MR
             // Randomly order a list corresponding to the block indices, and then
             //   generate the full permutation label listing accordingly
             PermuteLabels permuted_blocks (default_blocks);
-            std::random_shuffle (permuted_blocks.begin(), permuted_blocks.end());
+            random_shuffle (permuted_blocks.begin(), permuted_blocks.end());
             for (size_t ib = 0; ib != num_blocks; ++ib) {
               for (size_t i = 0; i != block_size; ++i)
                 permuted_labelling[blocks[ib][i]] = blocks[permuted_blocks[ib]][i];

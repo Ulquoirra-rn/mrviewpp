@@ -331,7 +331,7 @@ cpp = ld = None
 
 cxx = [ 'clang++', 'g++' ]
 cxx_args = '-c CFLAGS SRC -o OBJECT'.split()
-cpp_flags = [ '-std=c++11', '-DMRTRIX_BUILD_TYPE="'+build_type+'"' ]
+cpp_flags = [ '-std=c++17', '-DMRTRIX_BUILD_TYPE="'+build_type+'"' ]
 
 ld_args = 'OBJECTS LINKFLAGS -o EXECUTABLE'.split()
 ld_flags = []
@@ -1277,7 +1277,7 @@ int main() { Foo f; }
       with open (os.path.join (qt_dir.name, 'qt.cpp'), 'w') as f:
         f.write (filetext)
 
-      filetext = 'CONFIG += c++11'
+      filetext = 'CONFIG += c++17'
       if debug:
         filetext += ' debug'
       filetext += '\nQT += core gui opengl svg network\n'
