@@ -146,8 +146,10 @@ namespace MR
 
             QGroupBox* threshold_box = new QGroupBox (tr("Thresholds"));
             main_box->addWidget (threshold_box);
+            VBoxLayout* threshold_vlayout = new VBoxLayout;
+            threshold_box->setLayout (threshold_vlayout);
             hlayout = new HBoxLayout;
-            threshold_box->setLayout (hlayout);
+            threshold_vlayout->addLayout (hlayout);
 
             lower_threshold_check_box = new QCheckBox (this);
             connect (lower_threshold_check_box, SIGNAL (stateChanged(int)), this, SLOT (lower_threshold_changed(int)));
@@ -164,6 +166,22 @@ namespace MR
             connect (upper_threshold_check_box, SIGNAL (stateChanged(int)), this, SLOT (upper_threshold_changed(int)));
             connect (upper_threshold, SIGNAL (valueChanged()), this, SLOT (upper_threshold_value_changed()));
             hlayout->addWidget (upper_threshold);
+
+            // Sliders for the lower/upper thresholds (synced with the exact-value
+            // fields above; the value fields still show/edit the precise number).
+            lower_threshold_slider = new QSlider (Qt::Horizontal);
+            lower_threshold_slider->setRange (0, 1000);
+            lower_threshold_slider->setToolTip (tr ("Lower threshold"));
+            lower_threshold_slider->setEnabled (false);
+            connect (lower_threshold_slider, SIGNAL (valueChanged(int)), this, SLOT (lower_threshold_slider_slot(int)));
+            threshold_vlayout->addWidget (lower_threshold_slider);
+
+            upper_threshold_slider = new QSlider (Qt::Horizontal);
+            upper_threshold_slider->setRange (0, 1000);
+            upper_threshold_slider->setToolTip (tr ("Upper threshold"));
+            upper_threshold_slider->setEnabled (false);
+            connect (upper_threshold_slider, SIGNAL (valueChanged(int)), this, SLOT (upper_threshold_slider_slot(int)));
+            threshold_vlayout->addWidget (upper_threshold_slider);
 
 
             opacity_slider = new QSlider (Qt::Horizontal);
@@ -599,6 +617,51 @@ namespace MR
         }
 
 
+
+        // Map a threshold slider position [0,1000] to a value over [thr_lo, thr_hi]
+        // and push it into the matching exact-value field (which applies it). The
+        // slider auto-enables its threshold so dragging takes effect immediately.
+        void Overlay::lower_threshold_slider_slot (int pos)
+        {
+          if (image_list_view->selectionModel()->selectedIndexes().empty() || thr_hi <= thr_lo)
+            return;
+          const float value = thr_lo + (pos / 1000.0f) * (thr_hi - thr_lo);
+          if (!lower_threshold_check_box->isChecked())
+            lower_threshold_check_box->setChecked (true);
+          lower_threshold->setValue (value);
+        }
+
+
+
+        void Overlay::upper_threshold_slider_slot (int pos)
+        {
+          if (image_list_view->selectionModel()->selectedIndexes().empty() || thr_hi <= thr_lo)
+            return;
+          const float value = thr_lo + (pos / 1000.0f) * (thr_hi - thr_lo);
+          if (!upper_threshold_check_box->isChecked())
+            upper_threshold_check_box->setChecked (true);
+          upper_threshold->setValue (value);
+        }
+
+
+
+        // Sync slider positions from the exact-value fields (over [thr_lo, thr_hi]).
+        void Overlay::sync_threshold_sliders ()
+        {
+          auto v2p = [&] (float v) -> int {
+            if (thr_hi <= thr_lo || !std::isfinite (v)) return 0;
+            const int p = int (std::round (1000.0f * (v - thr_lo) / (thr_hi - thr_lo)));
+            return std::max (0, std::min (1000, p));
+          };
+          lower_threshold_slider->blockSignals (true);
+          lower_threshold_slider->setValue (v2p (lower_threshold->value()));
+          lower_threshold_slider->blockSignals (false);
+          upper_threshold_slider->blockSignals (true);
+          upper_threshold_slider->setValue (v2p (upper_threshold->value()));
+          upper_threshold_slider->blockSignals (false);
+        }
+
+
         void Overlay::opacity_changed (int)
         {
           QModelIndexList indices = image_list_view->selectionModel()->selectedIndexes();
@@ -650,6 +713,8 @@ namespace MR
           upper_threshold_check_box->setEnabled (indices.size());
           lower_threshold->setEnabled (indices.size());
           upper_threshold->setEnabled (indices.size());
+          lower_threshold_slider->setEnabled (indices.size());
+          upper_threshold_slider->setEnabled (indices.size());
           opacity_slider->setEnabled (indices.size());
           interpolate_check_box->setEnabled (indices.size());
 
@@ -753,6 +818,11 @@ namespace MR
                 Qt::PartiallyChecked ) :
               Qt::Unchecked);
           upper_threshold->setRate (rate);
+
+          // Slider span follows the colour-map window; sync slider knobs to values.
+          thr_lo = min_val;
+          thr_hi = max_val;
+          sync_threshold_sliders();
         }
 
 
