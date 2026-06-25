@@ -101,11 +101,6 @@ namespace MR
 
             main_box->addLayout (layout, 0);
 
-            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-            uncheck_all_button->setToolTip (tr ("Hide every overlay by unchecking its box"));
-            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ image_list_model->uncheck_all(); updateGL(); });
-            main_box->addWidget (uncheck_all_button, 0);
-
             image_list_view = new QListView (this);
             image_list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
             image_list_view->setHorizontalScrollBarPolicy (Qt::ScrollBarAlwaysOff);
@@ -190,6 +185,17 @@ namespace MR
 
             connect (image_list_model, SIGNAL (dataChanged (const QModelIndex&, const QModelIndex&)),
                      this, SLOT (toggle_shown_slot (const QModelIndex&, const QModelIndex&)));
+
+            HBoxLayout* checkall_layout = new HBoxLayout;
+            QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+            check_all_button->setToolTip (tr ("Show every overlay by checking its box"));
+            connect (check_all_button, &QPushButton::clicked, this, [this]{ image_list_model->check_all(); updateGL(); });
+            checkall_layout->addWidget (check_all_button, 1);
+            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+            uncheck_all_button->setToolTip (tr ("Hide every overlay by unchecking its box"));
+            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ image_list_model->uncheck_all(); updateGL(); });
+            checkall_layout->addWidget (uncheck_all_button, 1);
+            main_box->addLayout (checkall_layout, 0);
 
             update_selection();
           }

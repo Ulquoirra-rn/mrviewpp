@@ -207,11 +207,6 @@ namespace MR
           atlas_list_view->setModel (atlas_list_model);
           main_box->addWidget (atlas_list_view, 1);
 
-          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-          uncheck_all_button->setToolTip (tr ("Hide every atlas by unchecking its box"));
-          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->uncheck_all(); window().updateGL(); });
-          main_box->addWidget (uncheck_all_button, 0);
-
           connect (atlas_list_model, SIGNAL (dataChanged (const QModelIndex&, const QModelIndex&)),
                    this, SLOT (toggle_shown_slot (const QModelIndex&, const QModelIndex&)));
           connect (atlas_list_view->selectionModel(),
@@ -247,6 +242,17 @@ namespace MR
           connect (region_list, SIGNAL (itemDoubleClicked (QListWidgetItem*)),
                    this, SLOT (region_activated_slot (QListWidgetItem*)));
           list_box_layout->addWidget (region_list);
+
+          HBoxLayout* checkall_layout = new HBoxLayout;
+          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+          check_all_button->setToolTip (tr ("Show every atlas by checking its box"));
+          connect (check_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->check_all(); window().updateGL(); });
+          checkall_layout->addWidget (check_all_button, 1);
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setToolTip (tr ("Hide every atlas by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->uncheck_all(); window().updateGL(); });
+          checkall_layout->addWidget (uncheck_all_button, 1);
+          main_box->addLayout (checkall_layout, 0);
 
           connect (&window(), SIGNAL (focusChanged()), this, SLOT (focus_changed_slot ()));
         }

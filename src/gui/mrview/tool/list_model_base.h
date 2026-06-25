@@ -148,10 +148,15 @@ namespace MR
             }
 
             // Uncheck (hide) every item; refreshes the checkboxes in the view.
-            void uncheck_all () {
+            void uncheck_all () { set_all_checked (false); }
+
+            // Check (show) every item; refreshes the checkboxes in the view.
+            void check_all () { set_all_checked (true); }
+
+            void set_all_checked (bool checked) {
               bool any = false;
               for (size_t i = 0; i < items.size(); ++i) {
-                if (items[i] && items[i]->show) { items[i]->show = false; any = true; }
+                if (items[i] && items[i]->show != checked) { items[i]->show = checked; any = true; }
               }
               if (any && items.size())
                 emit dataChanged (index (0, 0), index (int(items.size())-1, 0));
