@@ -20,6 +20,7 @@
 #include "file/ofstream.h"
 #include "file/name_parser.h"
 #include "dwi/tractography/file.h"
+#include "dwi/tractography/file_trk.h"
 #include "dwi/tractography/properties.h"
 #include "raw.h"
 
@@ -740,6 +741,9 @@ void run ()
   }
   else if (Path::has_suffix(argument[0], ".vtk")) {
     reader.reset (new VTKReader(argument[0]));
+  }
+  else if (Path::has_suffix(argument[0], ".trk")) {
+    reader.reset (new TRKReader<float>(argument[0], properties));
   }
   else {
     throw Exception ("Unsupported input file type.");

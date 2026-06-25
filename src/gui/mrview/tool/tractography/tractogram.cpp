@@ -18,7 +18,9 @@
 #include "gui/mrview/tool/tractography/tractogram.h"
 #include "gui/mrview/window.h"
 #include "gui/projection.h"
+#include "file/path.h"
 #include "dwi/tractography/file.h"
+#include "dwi/tractography/file_trk.h"
 #include "dwi/tractography/properties.h"
 #include "dwi/tractography/scalar_file.h"
 #include "gui/opengl/lighting.h"
@@ -622,7 +624,11 @@ namespace MR
           GL::Context::Grab context;
           GL::assert_context_is_current();
 
-          DWI::Tractography::Reader<float> file (filename, properties);
+          std::unique_ptr<DWI::Tractography::ReaderInterface<float>> file;
+          if (Path::has_suffix (filename, ".trk"))
+            file.reset (new DWI::Tractography::TRKReader<float> (filename, properties));
+          else
+            file.reset (new DWI::Tractography::Reader<float> (filename, properties));
           DWI::Tractography::Streamline<float> tck;
           vector<Eigen::Vector3f> buffer;
           vector<GLint> starts;
@@ -631,7 +637,7 @@ namespace MR
 
           on_FOV_changed();
 
-          while (file (tck)) {
+          while ((*file) (tck)) {
 
             const size_t N = tck.size();
             if (!N) continue;
@@ -661,7 +667,6 @@ namespace MR
           }
           if (buffer.size())
             load_tracks_onto_GPU (buffer, starts, sizes, tck_count);
-          file.close();
           GL::assert_context_is_current();
         }
 
