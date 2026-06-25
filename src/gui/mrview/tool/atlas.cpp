@@ -213,26 +213,35 @@ namespace MR
                    SIGNAL (selectionChanged (const QItemSelection&, const QItemSelection&)),
                    this, SLOT (selection_changed_slot (const QItemSelection&, const QItemSelection&)));
 
-          HBoxLayout* hlayout2 = new HBoxLayout;
-          hlayout2->addWidget (new QLabel ("opacity"));
+          QGroupBox* display_box = new QGroupBox (tr ("Display"));
+          main_box->addWidget (display_box);
+          VBoxLayout* display_layout = new VBoxLayout;
+          display_box->setLayout (display_layout);
+          display_layout->addWidget (new QLabel (tr ("opacity")));
           opacity_slider = new QSlider (Qt::Horizontal);
           opacity_slider->setRange (0, 1000);
           opacity_slider->setSliderPosition (500);
           connect (opacity_slider, SIGNAL (valueChanged (int)), this, SLOT (opacity_slot (int)));
-          hlayout2->addWidget (opacity_slider, 1);
-          main_box->addLayout (hlayout2, 0);
+          display_layout->addWidget (opacity_slider);
 
-          region_label = new QLabel ("Region: —");
+          QGroupBox* region_box = new QGroupBox (tr ("Region under cursor"));
+          main_box->addWidget (region_box);
+          VBoxLayout* region_box_layout = new VBoxLayout;
+          region_box->setLayout (region_box_layout);
+          region_label = new QLabel ("—");
           region_label->setWordWrap (true);
-          main_box->addWidget (region_label, 0);
+          region_box_layout->addWidget (region_label);
 
-          main_box->addWidget (new QLabel ("Regions (double-click to jump):"), 0);
+          QGroupBox* list_box = new QGroupBox (tr ("Regions (double-click to jump)"));
+          main_box->addWidget (list_box, 1);
+          VBoxLayout* list_box_layout = new VBoxLayout;
+          list_box->setLayout (list_box_layout);
           region_list = new QListWidget (this);
           connect (region_list, SIGNAL (itemActivated (QListWidgetItem*)),
                    this, SLOT (region_activated_slot (QListWidgetItem*)));
           connect (region_list, SIGNAL (itemDoubleClicked (QListWidgetItem*)),
                    this, SLOT (region_activated_slot (QListWidgetItem*)));
-          main_box->addWidget (region_list, 1);
+          list_box_layout->addWidget (region_list);
 
           connect (&window(), SIGNAL (focusChanged()), this, SLOT (focus_changed_slot ()));
         }
@@ -355,11 +364,11 @@ namespace MR
         {
           Item* atlas = current_item();
           if (!atlas) {
-            region_label->setText ("Region: —");
+            region_label->setText ("—");
             return;
           }
           const std::string name = atlas->region_at (window().focus());
-          region_label->setText (name.empty() ? "Region: —" : qstr ("Region: " + name));
+          region_label->setText (name.empty() ? "—" : qstr (name));
         }
 
 

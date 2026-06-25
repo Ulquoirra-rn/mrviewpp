@@ -206,25 +206,28 @@ namespace MR
                    SIGNAL (selectionChanged (const QItemSelection&, const QItemSelection&)),
                    this, SLOT (selection_changed_slot (const QItemSelection&, const QItemSelection&)));
 
-          HBoxLayout* hlayout2 = new HBoxLayout;
-          hlayout2->addWidget (new QLabel ("colour"));
+          QGroupBox* display_box = new QGroupBox (tr ("Display"));
+          main_box->addWidget (display_box);
+          VBoxLayout* display_layout = new VBoxLayout;
+          display_box->setLayout (display_layout);
+
+          HBoxLayout* colour_layout = new HBoxLayout;
+          colour_layout->addWidget (new QLabel (tr ("colour")), 0);
           colour_button = new QColorButton;
           connect (colour_button, SIGNAL (clicked()), this, SLOT (colour_button_slot ()));
-          hlayout2->addWidget (colour_button, 1);
-          main_box->addLayout (hlayout2, 0);
+          colour_layout->addWidget (colour_button, 1);
+          display_layout->addLayout (colour_layout);
 
-          HBoxLayout* hlayout3 = new HBoxLayout;
-          hlayout3->addWidget (new QLabel ("opacity"));
+          display_layout->addWidget (new QLabel (tr ("opacity")));
           opacity_slider = new QSlider (Qt::Horizontal);
           opacity_slider->setRange (0, 1000);
           opacity_slider->setSliderPosition (1000);
           connect (opacity_slider, SIGNAL (valueChanged (int)), this, SLOT (opacity_slot (int)));
-          hlayout3->addWidget (opacity_slider, 1);
-          main_box->addLayout (hlayout3, 0);
+          display_layout->addWidget (opacity_slider);
 
-          wireframe_checkbox = new QCheckBox ("wireframe");
+          wireframe_checkbox = new QCheckBox (tr ("wireframe"));
           connect (wireframe_checkbox, SIGNAL (toggled (bool)), this, SLOT (wireframe_slot (bool)));
-          main_box->addWidget (wireframe_checkbox, 0);
+          display_layout->addWidget (wireframe_checkbox);
         }
 
 

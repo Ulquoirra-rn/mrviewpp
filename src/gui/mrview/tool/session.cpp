@@ -47,19 +47,24 @@ namespace MR
         {
           VBoxLayout* main_box = new VBoxLayout (this);
 
-          QPushButton* save_button = new QPushButton ("Save session...", this);
+          QGroupBox* box = new QGroupBox (tr ("Session file"));
+          main_box->addWidget (box);
+          VBoxLayout* box_layout = new VBoxLayout;
+          box->setLayout (box_layout);
+
+          QPushButton* save_button = new QPushButton (tr ("Save session..."), this);
           save_button->setToolTip (tr ("Save all loaded images, overlays, tracts, meshes and atlases to a session file"));
           connect (save_button, SIGNAL (clicked()), this, SLOT (save_slot ()));
-          main_box->addWidget (save_button);
+          box_layout->addWidget (save_button);
 
-          QPushButton* open_button = new QPushButton ("Open session...", this);
+          QPushButton* open_button = new QPushButton (tr ("Open session..."), this);
           open_button->setToolTip (tr ("Restore a previously saved session"));
           connect (open_button, SIGNAL (clicked()), this, SLOT (open_slot ()));
-          main_box->addWidget (open_button);
+          box_layout->addWidget (open_button);
 
-          status_label = new QLabel ("No session loaded.");
+          status_label = new QLabel (tr ("No session loaded."));
           status_label->setWordWrap (true);
-          main_box->addWidget (status_label);
+          box_layout->addWidget (status_label);
 
           main_box->addStretch (1);
         }
