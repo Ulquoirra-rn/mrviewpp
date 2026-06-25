@@ -28,7 +28,6 @@
 #include "gui/mrview/tool/atlas.h"
 #include "gui/mrview/tool/session.h"
 #include "gui/mrview/tool/connectome/connectome.h"
-#include "gui/mrview/tool/transform.h"
 
 #else
 
@@ -47,7 +46,6 @@ TOOL(ODF, ODF display, Display orientation density functions)
 TOOL(Fixel, Fixel plot, Plot fixel images)
 TOOL(Connectome, Connectome, Plot connectome properties)
 TOOL(Capture, Screen capture, Capture the screen as a png file)
-TOOL(Transform, Transform, Manipulate the rigid-body transform of the image)
 TOOL(Session, Session, Save and restore the full scene to a session file)
 
 #endif
