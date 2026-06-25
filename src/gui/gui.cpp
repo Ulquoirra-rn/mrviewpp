@@ -16,6 +16,8 @@
 
 #include <locale>
 #include <clocale>
+#include <QStyleFactory>
+#include <QStyle>
 #include "gui/gui.h"
 #include "gui/opengl/gl.h"
 
@@ -43,6 +45,25 @@ namespace MR
       std::setlocale (LC_ALL, "C");
 
       setAttribute (Qt::AA_DontCreateNativeWidgetSiblings);
+
+      // mrview's official macOS build runs as a packaged .app bundle, which gets
+      // the native macOS widget style. When run as a raw binary, Qt falls back to
+      // the Fusion style; explicitly request the native "macintosh" style so the
+      // GUI matches the official build (sliders, checkboxes, spin boxes, etc.).
+      //CONF option: GUIStyle
+      //CONF default: macintosh on macOS (the native style); empty elsewhere
+      //CONF The Qt widget style to use for the GUI. Empty keeps Qt's platform
+      //CONF default. Set to a QStyleFactory key such as "Fusion" to override.
+#ifdef MRTRIX_MACOSX
+      const std::string default_style = "macintosh";
+#else
+      const std::string default_style;
+#endif
+      const std::string stylename = MR::File::Config::get ("GUIStyle", default_style);
+      if (stylename.size()) {
+        if (QStyle* s = QStyleFactory::create (qstr (stylename)))
+          setStyle (s);
+      }
     }
 
 
