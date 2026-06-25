@@ -102,6 +102,11 @@ namespace MR
 
           main_box->addWidget (list_view, 1);
 
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setToolTip (tr ("Hide every ROI by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ list_model->uncheck_all(); updateGL(); });
+          main_box->addWidget (uncheck_all_button, 0);
+
           QPushButton* grow_cut_button = new QPushButton (tr ("Grow-cut from ROIs"), this);
           grow_cut_button->setToolTip (tr ("Use the painted ROIs as seeds (one region per ROI) and grow-cut "
                                            "segment the current image; results are added as new ROIs"));

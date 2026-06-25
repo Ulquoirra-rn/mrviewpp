@@ -147,6 +147,16 @@ namespace MR
               endRemoveRows();
             }
 
+            // Uncheck (hide) every item; refreshes the checkboxes in the view.
+            void uncheck_all () {
+              bool any = false;
+              for (size_t i = 0; i < items.size(); ++i) {
+                if (items[i] && items[i]->show) { items[i]->show = false; any = true; }
+              }
+              if (any && items.size())
+                emit dataChanged (index (0, 0), index (int(items.size())-1, 0));
+            }
+
             vector<std::unique_ptr<Displayable>> items;
           private:
             std::pair<int, int> swapped_rows;

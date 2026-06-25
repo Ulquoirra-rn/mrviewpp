@@ -101,6 +101,11 @@ namespace MR
 
             main_box->addLayout (layout, 0);
 
+            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+            uncheck_all_button->setToolTip (tr ("Hide every overlay by unchecking its box"));
+            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ image_list_model->uncheck_all(); updateGL(); });
+            main_box->addWidget (uncheck_all_button, 0);
+
             image_list_view = new QListView (this);
             image_list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
             image_list_view->setHorizontalScrollBarPolicy (Qt::ScrollBarAlwaysOff);

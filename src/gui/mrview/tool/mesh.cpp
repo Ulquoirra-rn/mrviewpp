@@ -200,6 +200,11 @@ namespace MR
           mesh_list_view->setModel (mesh_list_model);
           main_box->addWidget (mesh_list_view, 1);
 
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setToolTip (tr ("Hide every mesh by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ mesh_list_model->uncheck_all(); window().updateGL(); });
+          main_box->addWidget (uncheck_all_button, 0);
+
           connect (mesh_list_model, SIGNAL (dataChanged (const QModelIndex&, const QModelIndex&)),
                    this, SLOT (toggle_shown_slot (const QModelIndex&, const QModelIndex&)));
           connect (mesh_list_view->selectionModel(),

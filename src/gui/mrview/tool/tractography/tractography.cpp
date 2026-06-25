@@ -135,6 +135,11 @@ namespace MR
 
             main_box->addLayout (hlayout, 0);
 
+            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+            uncheck_all_button->setToolTip (tr ("Hide every tractogram by unchecking its box"));
+            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ tractogram_list_model->uncheck_all(); window().updateGL(); });
+            main_box->addWidget (uncheck_all_button, 0);
+
             tractogram_list_view = new QListView (this);
             tractogram_list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
             tractogram_list_view->setDragEnabled (true);

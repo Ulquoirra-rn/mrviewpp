@@ -207,6 +207,11 @@ namespace MR
           atlas_list_view->setModel (atlas_list_model);
           main_box->addWidget (atlas_list_view, 1);
 
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setToolTip (tr ("Hide every atlas by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->uncheck_all(); window().updateGL(); });
+          main_box->addWidget (uncheck_all_button, 0);
+
           connect (atlas_list_model, SIGNAL (dataChanged (const QModelIndex&, const QModelIndex&)),
                    this, SLOT (toggle_shown_slot (const QModelIndex&, const QModelIndex&)));
           connect (atlas_list_view->selectionModel(),
