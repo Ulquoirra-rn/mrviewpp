@@ -24,6 +24,7 @@
 #include "gui/mrview/tool/fixel/fixel.h"
 #include "gui/mrview/tool/screen_capture.h"
 #include "gui/mrview/tool/tractography/tractography.h"
+#include "gui/mrview/tool/mesh.h"
 #include "gui/mrview/tool/connectome/connectome.h"
 #include "gui/mrview/tool/transform.h"
 
@@ -38,6 +39,7 @@ TOOL(View, View options, Adjust view settings)
 TOOL(Overlay, Overlay, Overlay other images over the current image)
 TOOL(ROI, ROI editor, View & edit regions of interest)
 TOOL(Tractography, Tractography, Display tracks over the current image)
+TOOL(Mesh, Mesh display, Display surface meshes over the current image)
 TOOL(ODF, ODF display, Display orientation density functions)
 TOOL(Fixel, Fixel plot, Plot fixel images)
 TOOL(Connectome, Connectome, Plot connectome properties)
