@@ -70,7 +70,6 @@ namespace MR
             virtual void closeEvent (QCloseEvent* event) override;
 
           private slots:
-            void onThemeChanged (int index);
             void onImageChanged ();
             void onImageVisibilityChanged (bool);
             void onFocusChanged ();
@@ -122,7 +121,6 @@ namespace MR
             AdjustButton *lower_threshold, *upper_threshold;
             QCheckBox *lower_threshold_check_box, *upper_threshold_check_box, *clip_highlight_check_box, *clip_intersectionmode_check_box, *ortho_view_in_row_check_box;
             QComboBox *plane_combobox;
-            QComboBox *theme_combobox;
             QGroupBox *volume_box, *transparency_box, *threshold_box, *clip_box, *lightbox_box;
             QSlider *opacity;
             QMenu *clip_planes_option_menu, *clip_planes_reset_submenu;

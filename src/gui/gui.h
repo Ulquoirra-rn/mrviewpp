@@ -31,11 +31,6 @@ namespace MR
     inline QString qstr (const std::string& s) { return QString::fromUtf8 (s.c_str()); }
 
 
-    // GUI colour themes (applied as a QPalette over the Fusion style).
-    std::vector<std::string> gui_theme_names ();
-    void set_gui_theme (const std::string& name);
-
-
     class App : public QApplication { NOMEMALIGN
 
       public:
