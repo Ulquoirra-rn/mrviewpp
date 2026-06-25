@@ -95,6 +95,11 @@ int main (int cmdline_argc, char** cmdline_argv)
     ::MR::App::verify_usage();
     ::MR::App::parse_special_options();
 #ifdef __gui_app_h__
+    // Enable high-DPI / Retina rendering: scale widgets to the device pixel
+    // ratio and load @2x icon pixmaps so toolbar/tool icons stay crisp.
+    // These must be set before the QApplication is constructed.
+    QApplication::setAttribute (Qt::AA_EnableHighDpiScaling);
+    QApplication::setAttribute (Qt::AA_UseHighDpiPixmaps);
     ::MR::GUI::App app (cmdline_argc, cmdline_argv);
 #endif
     ::MR::App::parse ();
