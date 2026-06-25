@@ -113,6 +113,22 @@ namespace MR
           connect (grow_cut_button, SIGNAL (clicked()), this, SLOT (grow_cut_slot ()));
           main_box->addWidget (grow_cut_button, 0);
 
+          HBoxLayout* region_grow_layout = new HBoxLayout;
+          QPushButton* region_grow_button = new QPushButton (tr ("Region grow"), this);
+          region_grow_button->setToolTip (tr ("Grow the selected ROI seed to all connected voxels whose "
+                                              "intensity is within the tolerance of the seed's mean intensity"));
+          connect (region_grow_button, SIGNAL (clicked()), this, SLOT (region_grow_slot ()));
+          region_grow_layout->addWidget (region_grow_button, 1);
+          region_grow_layout->addWidget (new QLabel (tr ("tol %")), 0);
+          tolerance_button = new AdjustButton (this);
+          tolerance_button->setToolTip (tr ("Region-grow intensity tolerance, as a percentage of the image intensity range"));
+          tolerance_button->setMin (0.0f);
+          tolerance_button->setMax (100.0f);
+          tolerance_button->setRate (0.5f);
+          tolerance_button->setValue (10.0f);
+          region_grow_layout->addWidget (tolerance_button, 0);
+          main_box->addLayout (region_grow_layout, 0);
+
           GridLayout* grid_layout = new GridLayout;
 
           draw_button = new QToolButton (this);
@@ -533,6 +549,121 @@ namespace MR
             QModelIndex first = list_model->index (0, 0);
             list_model->remove_item (first);
           }
+
+          updateGL();
+        }
+
+
+
+        // Seeded region growing (ITK-SNAP-style "region grow"): grow the selected
+        // ROI seed to all 6-connected voxels whose intensity is within a tolerance
+        // of the seed's mean intensity. The grown region replaces the seed ROI.
+        void ROI::region_grow_slot ()
+        {
+          if (!window().image()) {
+            QMessageBox::warning (this, "Region grow", "Load an image first to use as the intensity for region growing.");
+            return;
+          }
+          QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
+          if (indices.size() != 1) {
+            QMessageBox::warning (this, "Region grow", "Select a single ROI to use as the seed.");
+            return;
+          }
+          ROI_Item* roi = dynamic_cast<ROI_Item*> (list_model->get (indices[0]));
+          if (!roi)
+            return;
+
+          MR::Image<cfloat> in (window().image()->image);
+          const ssize_t nx = in.size(0), ny = in.size(1), nz = in.size(2);
+          if (roi->header().size(0) != nx || roi->header().size(1) != ny || roi->header().size(2) != nz) {
+            QMessageBox::warning (this, "Region grow", "The selected ROI does not match the current image dimensions.");
+            return;
+          }
+          const size_t N = size_t(nx) * ny * nz;
+          auto idx = [&] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
+
+          // Intensities (first volume) + range.
+          vector<float> intensity (N);
+          float vmin = std::numeric_limits<float>::infinity();
+          float vmax = -std::numeric_limits<float>::infinity();
+          if (in.ndim() > 3) in.index(3) = 0;
+          for (ssize_t z = 0; z != nz; ++z) { in.index(2) = z;
+            for (ssize_t y = 0; y != ny; ++y) { in.index(1) = y;
+              for (ssize_t x = 0; x != nx; ++x) { in.index(0) = x;
+                const cfloat cv = in.value();
+                const float v = cv.real();
+                intensity[idx(x,y,z)] = v;
+                if (std::isfinite (v)) { vmin = std::min (vmin, v); vmax = std::max (vmax, v); }
+              }
+            }
+          }
+          const float range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
+
+          // Read the seed mask.
+          vector<GLubyte> seed (N);
+          {
+            GL::Context::Grab context;
+            GL::assert_context_is_current();
+            roi->texture().bind();
+            gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
+            gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&seed[0]));
+          }
+
+          // Mean intensity over the seed voxels.
+          double sum = 0.0; size_t cnt = 0;
+          for (size_t i = 0; i < N; ++i)
+            if (seed[i]) { sum += intensity[i]; ++cnt; }
+          if (!cnt) {
+            QMessageBox::warning (this, "Region grow", "Paint a seed in the selected ROI first.");
+            return;
+          }
+          const float mean = float (sum / double(cnt));
+
+          const float pct = std::isfinite (tolerance_button->value()) ? tolerance_button->value() : 10.0f;
+          const float tol = (pct / 100.0f) * range;
+
+          // 6-connected flood fill from the seed voxels.
+          const int dx[6] = { 1, -1, 0, 0, 0, 0 };
+          const int dy[6] = { 0, 0, 1, -1, 0, 0 };
+          const int dz[6] = { 0, 0, 0, 0, 1, -1 };
+          vector<char> in_region (N, 0);
+          vector<size_t> queue;
+          queue.reserve (cnt);
+          for (size_t i = 0; i < N; ++i)
+            if (seed[i]) { in_region[i] = 1; queue.push_back (i); }
+          for (size_t head = 0; head < queue.size(); ++head) {
+            const size_t p = queue[head];
+            const ssize_t z = ssize_t (p / (size_t(nx) * ny));
+            const ssize_t rem = ssize_t (p % (size_t(nx) * ny));
+            const ssize_t y = rem / nx;
+            const ssize_t x = rem % nx;
+            for (int n = 0; n != 6; ++n) {
+              const ssize_t qx = x+dx[n], qy = y+dy[n], qz = z+dz[n];
+              if (qx < 0 || qy < 0 || qz < 0 || qx >= nx || qy >= ny || qz >= nz)
+                continue;
+              const size_t q = idx (qx, qy, qz);
+              if (!in_region[q] && std::abs (intensity[q] - mean) <= tol) {
+                in_region[q] = 1;
+                queue.push_back (q);
+              }
+            }
+          }
+
+          // Write the grown region back into the seed ROI.
+          {
+            GL::Context::Grab context;
+            GL::assert_context_is_current();
+            roi->bind();
+            gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+            vector<GLubyte> slice (size_t(nx) * ny);
+            for (ssize_t z = 0; z != nz; ++z) {
+              for (ssize_t y = 0; y != ny; ++y)
+                for (ssize_t x = 0; x != nx; ++x)
+                  slice[size_t(x) + nx*y] = in_region[idx(x,y,z)] ? 1 : 0;
+              roi->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
+            }
+          }
+          roi->saved = false;
 
           updateGL();
         }

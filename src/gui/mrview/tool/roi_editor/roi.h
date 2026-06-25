@@ -81,6 +81,7 @@ namespace MR
             void opacity_changed (int unused);
             void model_rows_changed ();
             void grow_cut_slot ();
+            void region_grow_slot ();
 
           protected:
              QPushButton *hide_all_button, *close_button, *save_button;
@@ -93,6 +94,7 @@ namespace MR
              QColorButton* colour_button;
              QSlider *opacity_slider;
              AdjustButton *brush_size_button;
+             AdjustButton *tolerance_button;
              int current_axis, current_slice;
              bool in_insert_mode, insert_mode_value;
              Eigen::Vector3f current_origin, prev_pos;
