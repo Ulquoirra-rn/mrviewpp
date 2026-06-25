@@ -16,6 +16,7 @@
 
 #include <locale>
 #include <clocale>
+#include <QStyleFactory>
 #include "gui/gui.h"
 #include "gui/opengl/gl.h"
 
@@ -43,6 +44,23 @@ namespace MR
       std::setlocale (LC_ALL, "C");
 
       setAttribute (Qt::AA_DontCreateNativeWidgetSiblings);
+
+      // Force Qt's cross-platform Fusion style. The native macOS widget style
+      // mis-sizes the compact icon buttons in the tool docks (they render at a
+      // fixed small size with gaps, looking squished/overlapping); Fusion lays
+      // them out consistently and fills the row as intended.
+      //CONF option: GUIStyle
+      //CONF default: Fusion
+      //CONF The Qt widget style to use for the GUI ("Fusion", or a platform
+      //CONF native style such as "macintosh"/"windowsvista"); empty keeps Qt's
+      //CONF default for the platform.
+      {
+        const std::string style = MR::File::Config::get ("GUIStyle", "Fusion");
+        if (style.size()) {
+          if (QStyle* s = QStyleFactory::create (qstr (style)))
+            setStyle (s);
+        }
+      }
     }
 
 
