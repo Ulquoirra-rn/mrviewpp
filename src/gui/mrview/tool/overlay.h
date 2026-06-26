@@ -63,6 +63,7 @@ namespace MR
           private slots:
             void image_open_slot ();
             void image_close_slot ();
+            void image_export_slot ();
             void hide_all_slot ();
             void toggle_shown_slot (const QModelIndex&, const QModelIndex&);
             void selection_changed_slot (const QItemSelection &, const QItemSelection &);

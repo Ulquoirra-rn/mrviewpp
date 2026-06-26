@@ -16,7 +16,14 @@
 
 #include "gui/mrview/tool/overlay.h"
 
+#include <limits>
+#include <QMessageBox>
+
 #include "mrtrix.h"
+#include "image.h"
+#include "algo/loop.h"
+#include "file/path.h"
+#include "gui/gui.h"
 #include "gui/mrview/gui_image.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/mode/slice.h"
@@ -98,6 +105,12 @@ namespace MR
             hide_all_button->setCheckable (true);
             connect (hide_all_button, SIGNAL (clicked()), this, SLOT (hide_all_slot ()));
             layout->addWidget (hide_all_button, 1);
+
+            QPushButton* export_button = new QPushButton (this);
+            export_button->setToolTip (tr ("Export selected overlay to file (current threshold baked in)"));
+            export_button->setIcon (QIcon (":/save.svg"));
+            connect (export_button, SIGNAL (clicked()), this, SLOT (image_export_slot ()));
+            layout->addWidget (export_button, 1);
 
             main_box->addLayout (layout, 0);
 
@@ -317,6 +330,75 @@ namespace MR
           }
           GL::assert_context_is_current();
           updateGL();
+        }
+
+
+        void Overlay::image_export_slot ()
+        {
+          QModelIndexList indexes = image_list_view->selectionModel()->selectedIndexes();
+          if (indexes.size() != 1) {
+            QMessageBox::information (this, "Export overlay",
+                "Please select exactly one overlay to export.");
+            return;
+          }
+          QModelIndex index = indexes.first();
+          Item* overlay = image_list_model->get_image (index);
+          if (!overlay)
+            return;
+
+          // Suggest a name derived from the source, defaulting to a NIfTI file.
+          std::string suggested = Path::basename (overlay->image.name());
+          {
+            size_t dot = suggested.find_last_of ('.');
+            if (dot != std::string::npos) {
+              // Strip a trailing .nii.gz / .mif.gz etc.
+              std::string stem = suggested.substr (0, dot);
+              size_t dot2 = stem.find_last_of ('.');
+              if (dot != std::string::npos && suggested.substr (dot) == ".gz" && dot2 != std::string::npos)
+                stem = stem.substr (0, dot2);
+              suggested = stem;
+            }
+            suggested += "_thresholded.nii.gz";
+          }
+
+          std::string fname = Dialog::File::get_save_image_name (this, "Export overlay", suggested);
+          if (fname.empty())
+            return;
+
+          const bool discard_lower = overlay->use_discard_lower();
+          const bool discard_upper = overlay->use_discard_upper();
+          const float lower = overlay->lessthan;
+          const float upper = overlay->greaterthan;
+
+          try {
+            // Work on a copy of the (in-memory) overlay data. The displayed
+            // overlay is held as cfloat; we export the real component as float32
+            // so that thresholded-out voxels can be represented as NaN.
+            MR::Image<cfloat> in (overlay->image);
+            MR::Header header (overlay->header());
+            header.datatype() = MR::DataType::Float32;
+            header.datatype().set_byte_order_native();
+            header.keyval()["mrview_threshold_lower"] = discard_lower ? str(lower) : "none";
+            header.keyval()["mrview_threshold_upper"] = discard_upper ? str(upper) : "none";
+
+            auto out = MR::Image<float>::create (fname, header);
+
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            for (auto l = MR::Loop("exporting overlay", in) (in, out); l; ++l) {
+              cfloat cv = in.value();
+              float v = cv.real();
+              if ((discard_lower && v < lower) || (discard_upper && v > upper))
+                v = nan;
+              out.value() = v;
+            }
+            QMessageBox::information (this, "Export overlay",
+                qstr ("Overlay exported to:\n" + fname));
+          }
+          catch (Exception& E) {
+            E.display();
+            QMessageBox::critical (this, "Export overlay",
+                qstr ("Failed to export overlay:\n" + std::string (E[0])));
+          }
         }
 
 
