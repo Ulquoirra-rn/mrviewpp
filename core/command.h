@@ -95,6 +95,8 @@ int main (int cmdline_argc, char** cmdline_argv)
     ::MR::App::verify_usage();
     ::MR::App::parse_special_options();
 #ifdef __gui_app_h__
+    QApplication::setAttribute (Qt::AA_EnableHighDpiScaling);
+    QApplication::setAttribute (Qt::AA_UseHighDpiPixmaps);
     ::MR::GUI::App app (cmdline_argc, cmdline_argv);
 #endif
     ::MR::App::parse ();
