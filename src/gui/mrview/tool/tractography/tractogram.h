@@ -41,7 +41,12 @@ namespace MR
           Q_OBJECT
 
           public:
-            Tractogram (Tractography& tool, const std::string& file_path);
+            // When loading a .trx group as its own tractogram, display_name
+            // overrides the list label and track_filter restricts loading to the
+            // given original streamline indices (empty = load all streamlines).
+            Tractogram (Tractography& tool, const std::string& file_path,
+                        const std::string& display_name = std::string(),
+                        const vector<size_t>& track_filter = vector<size_t>());
 
             ~Tractogram ();
 
@@ -145,6 +150,10 @@ namespace MR
             Tractography& tractography_tool;
 
             const std::string filename;
+
+            // Original streamline indices to load (empty = all); used to load a
+            // single .trx group as its own tractogram.
+            vector<size_t> track_filter;
 
             TrackColourType color_type;
             TrackThresholdType threshold_type;

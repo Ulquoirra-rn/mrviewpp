@@ -72,6 +72,7 @@ namespace MR
               void threshold_upper_changed (int unused);
               void threshold_lower_value_changed ();
               void threshold_upper_value_changed ();
+              void threshold_lower_slider_slot (int value);
 
 
             protected:
@@ -87,6 +88,9 @@ namespace MR
               QComboBox *threshold_file_combobox;
               AdjustButton *threshold_lower, *threshold_upper;
               QCheckBox *threshold_upper_box, *threshold_lower_box;
+              QSlider *threshold_lower_slider;
+              float thr_lo, thr_hi;
+              void sync_threshold_slider ();
 
               // dpv/dps arrays of the current .trx tractogram, in combobox order;
               // combobox index == trx_combobox_base + position in this vector.

@@ -22,6 +22,7 @@
 #include "gui/gui.h"
 #include "dwi/tractography/file.h"
 #include "dwi/tractography/file_trk_write.h"
+#include "dwi/tractography/file_trx.h"
 #include "dwi/tractography/file_trx_write.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/tool/tractography/tractography.h"
@@ -74,10 +75,47 @@ namespace MR
             Model (QObject* parent) :
               ListModelBase (parent) { }
 
+            // Insert a fully-loaded tractogram into the list.
+            void insert_tractogram (Tractogram* tractogram) {
+              beginInsertRows (QModelIndex(), items.size(), items.size() + 1);
+              items.push_back (std::unique_ptr<Displayable> (tractogram));
+              endInsertRows();
+            }
+
             void add_items (vector<std::string>& filenames,
                             Tractography& tractography_tool) {
 
               for (size_t i = 0; i < filenames.size(); ++i) {
+
+                // A .trx that contains named groups is loaded as one tractogram
+                // per group (each restricted to that group's streamlines).
+                if (Path::has_suffix (filenames[i], ".trx")) {
+                  vector<std::pair<std::string,std::string>> grps;
+                  try { grps = DWI::Tractography::TRX_Data::groups (filenames[i]); }
+                  catch (Exception& e) { e.display(); }
+                  if (grps.size()) {
+                    const std::string base = Path::basename (filenames[i]);
+                    for (const auto& g : grps) {
+                      try {
+                        const vector<uint64_t> idx = DWI::Tractography::TRX_Data::read_uint (filenames[i], g.second);
+                        vector<size_t> filter (idx.begin(), idx.end());
+                        Tractogram* tractogram = new Tractogram (tractography_tool, filenames[i],
+                                                                 base + " : " + g.first, filter);
+                        try {
+                          tractogram->load_tracks();
+                          insert_tractogram (tractogram);
+                        } catch (Exception& e) {
+                          delete tractogram;
+                          e.display();
+                        }
+                      } catch (Exception& e) {
+                        e.display();
+                      }
+                    }
+                    continue;
+                  }
+                }
+
                 Tractogram* tractogram = new Tractogram (tractography_tool, filenames[i]);
                 try {
                   tractogram->load_tracks();
@@ -100,9 +138,7 @@ namespace MR
                       }
                     }
                   }
-                  beginInsertRows (QModelIndex(), items.size(), items.size() + 1);
-                  items.push_back (std::unique_ptr<Displayable> (tractogram));
-                  endInsertRows();
+                  insert_tractogram (tractogram);
                 } catch (Exception& e) {
                   delete tractogram;
                   e.display();

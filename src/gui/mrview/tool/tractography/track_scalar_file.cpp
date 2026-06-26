@@ -14,6 +14,10 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <QSlider>
+#include <algorithm>
+#include <cmath>
+
 #include "gui/mrview/tool/tractography/track_scalar_file.h"
 
 #include "gui/dialog/file.h"
@@ -104,6 +108,16 @@ namespace MR
           hlayout->addWidget (threshold_upper);
 
           vlayout->addLayout (hlayout);
+
+          // A slider for the lower threshold (synced with the lower AdjustButton).
+          threshold_lower_slider = new QSlider (Qt::Horizontal);
+          threshold_lower_slider->setRange (0, 1000);
+          threshold_lower_slider->setToolTip (tr ("Lower threshold"));
+          threshold_lower_slider->setEnabled (false);
+          connect (threshold_lower_slider, SIGNAL (valueChanged(int)), this, SLOT (threshold_lower_slider_slot(int)));
+          vlayout->addWidget (threshold_lower_slider);
+
+          thr_lo = thr_hi = 0.0f;
 
           main_box->addWidget (threshold_box);
 
@@ -213,6 +227,7 @@ namespace MR
           threshold_lower    ->setVisible (show_threshold_controls);
           threshold_upper_box->setVisible (show_threshold_controls);
           threshold_upper    ->setVisible (show_threshold_controls);
+          threshold_lower_slider->setVisible (show_threshold_controls);
 
           if (show_threshold_controls) {
             threshold_lower_box->setChecked (tractogram->use_discard_lower());
@@ -223,7 +238,42 @@ namespace MR
             threshold_lower->setValue (tractogram->lessthan);
             threshold_upper->setRate  (tractogram->get_threshold_rate());
             threshold_upper->setValue (tractogram->greaterthan);
+
+            // Map the slider across the threshold scalar's value range.
+            thr_lo = tractogram->get_threshold_min();
+            thr_hi = tractogram->get_threshold_max();
+            threshold_lower_slider->setEnabled (tractogram->use_discard_lower());
+            sync_threshold_slider();
           }
+        }
+
+
+
+        void TrackScalarFileOptions::sync_threshold_slider ()
+        {
+          auto v2p = [&] (float v) -> int {
+            if (thr_hi <= thr_lo || !std::isfinite (v)) return 0;
+            const int p = int (std::round (1000.0f * (v - thr_lo) / (thr_hi - thr_lo)));
+            return std::max (0, std::min (1000, p));
+          };
+          threshold_lower_slider->blockSignals (true);
+          threshold_lower_slider->setValue (v2p (threshold_lower->value()));
+          threshold_lower_slider->blockSignals (false);
+        }
+
+
+
+        void TrackScalarFileOptions::threshold_lower_slider_slot (int pos)
+        {
+          if (!tractogram || thr_hi <= thr_lo)
+            return;
+          const float value = thr_lo + (pos / 1000.0f) * (thr_hi - thr_lo);
+          threshold_lower->setValue (value);   // AdjustButton::setValue does not emit valueChanged
+          if (!threshold_lower_box->isChecked())
+            threshold_lower_box->setChecked (true);   // -> threshold_lower_changed enables discard
+          tractogram->lessthan = value;
+          tractogram->set_use_discard_lower (true);
+          window().updateGL();
         }
 
 

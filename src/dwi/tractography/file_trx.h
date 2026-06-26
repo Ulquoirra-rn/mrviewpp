@@ -57,11 +57,19 @@ namespace MR
             std::map<std::string, ZipEntry> entries;
             parse_zip (zip, entries, file);
 
-            // header.json
-            const vector<uint8_t> hdr_bytes = extract (zip, find_entry (entries, "header.json", file), file);
-            auto header = nlohmann::json::parse (std::string (hdr_bytes.begin(), hdr_bytes.end()));
-            nb_streamlines = header.at ("NB_STREAMLINES").get<uint64_t>();
-            nb_vertices    = header.at ("NB_VERTICES").get<uint64_t>();
+            // header.json is optional: when absent (or missing fields), the
+            // stream/vertex counts are derived from the array sizes below.
+            nb_streamlines = 0;
+            nb_vertices = 0;
+            auto hdr_it = entries.find ("header.json");
+            if (hdr_it != entries.end()) {
+              const vector<uint8_t> hdr_bytes = extract (zip, hdr_it->second, file);
+              try {
+                auto header = nlohmann::json::parse (std::string (hdr_bytes.begin(), hdr_bytes.end()));
+                if (header.count ("NB_STREAMLINES")) nb_streamlines = header["NB_STREAMLINES"].get<uint64_t>();
+                if (header.count ("NB_VERTICES"))    nb_vertices    = header["NB_VERTICES"].get<uint64_t>();
+              } catch (...) { /* tolerate a malformed header and derive counts */ }
+            }
 
             // positions (RASMM) -> flat float array
             const std::string pos_name = find_prefixed (entries, "positions", file);
@@ -227,6 +235,11 @@ namespace MR
 
           void load_positions (const vector<uint8_t>& raw, const std::string& dtype, const std::string& file)
           {
+            // Derive the vertex count from the array size when no header gave it.
+            if (!nb_vertices) {
+              const size_t bytes = (dtype == "float64") ? 8 : (dtype == "float16") ? 2 : 4;
+              nb_vertices = raw.size() / (3 * bytes);
+            }
             const size_t n = 3 * nb_vertices;
             positions.resize (n);
             if (dtype == "float32") {
@@ -245,16 +258,30 @@ namespace MR
 
           void load_offsets (const vector<uint8_t>& raw, const std::string& dtype, const std::string& file)
           {
-            offsets.resize (nb_streamlines);
-            if (dtype == "uint64") {
-              if (raw.size() < nb_streamlines * 8) throw Exception ("TRX offsets array too small (\"" + file + "\")");
-              for (uint64_t i = 0; i != nb_streamlines; ++i) { uint64_t v; std::memcpy (&v, &raw[8*i], 8); offsets[i] = v; }
-            } else if (dtype == "uint32") {
-              if (raw.size() < nb_streamlines * 4) throw Exception ("TRX offsets array too small (\"" + file + "\")");
-              for (uint64_t i = 0; i != nb_streamlines; ++i) { uint32_t v; std::memcpy (&v, &raw[4*i], 4); offsets[i] = v; }
-            } else {
+            // Number of entries actually stored (may be NB_STREAMLINES or +1).
+            const size_t bytes = (dtype == "uint64" || dtype == "int64") ? 8 : 4;
+            const size_t count = raw.size() / bytes;
+            auto get = [&] (size_t i) -> uint64_t {
+              if (bytes == 8) { uint64_t v; std::memcpy (&v, &raw[8*i], 8); return v; }
+              uint32_t v; std::memcpy (&v, &raw[4*i], 4); return v;   // uint32/int32: indices are non-negative
+            };
+            if (dtype != "uint64" && dtype != "int64" && dtype != "uint32" && dtype != "int32")
               throw Exception ("unsupported TRX offsets dtype \"" + dtype + "\" in \"" + file + "\"");
+
+            // Derive the streamline count if no header gave it: a trailing entry
+            // equal to NB_VERTICES indicates the N+1 convention.
+            if (!nb_streamlines) {
+              if (count && get (count - 1) == nb_vertices)
+                nb_streamlines = count - 1;
+              else
+                nb_streamlines = count;
             }
+            if (count < nb_streamlines)
+              throw Exception ("TRX offsets array too small (\"" + file + "\")");
+
+            offsets.resize (nb_streamlines);
+            for (uint64_t i = 0; i != nb_streamlines; ++i)
+              offsets[i] = get (i);
           }
       };
 
@@ -396,6 +423,60 @@ namespace MR
             } else {
               throw Exception ("unsupported TRX data-array dtype \"" + dtype + "\" in \"" + file + "\"");
             }
+          }
+          return out;
+        }
+
+        //! Read an integer data array (any int dtype) as uint64 values.
+        inline vector<uint64_t> read_uint (const std::string& file, const std::string& entry) {
+          const vector<uint8_t> b = _slurp (file);
+          const auto entries = _entries (b, file);
+          auto it = entries.find (entry);
+          if (it == entries.end())
+            throw Exception ("TRX file \"" + file + "\" has no array \"" + entry + "\"");
+          const vector<uint8_t> raw = _extract (b, it->second, file);
+          const size_t dot = entry.find_last_of ('.');
+          const std::string dtype = dot == std::string::npos ? "" : entry.substr (dot + 1);
+          const size_t bytes = (dtype == "uint64" || dtype == "int64") ? 8
+                             : (dtype == "uint32" || dtype == "int32") ? 4
+                             : (dtype == "uint16" || dtype == "int16") ? 2
+                             : (dtype == "uint8"  || dtype == "int8" || dtype == "bool") ? 1 : 0;
+          if (!bytes)
+            throw Exception ("unsupported TRX integer dtype \"" + dtype + "\" in \"" + file + "\"");
+          vector<uint64_t> out (raw.size() / bytes);
+          for (size_t i = 0; i != out.size(); ++i) {
+            uint64_t v = 0;
+            std::memcpy (&v, &raw[bytes * i], bytes);
+            out[i] = v;
+          }
+          return out;
+        }
+
+        //! Read the root-level offsets array (start vertex index per streamline).
+        inline vector<uint64_t> read_offsets (const std::string& file) {
+          const vector<uint8_t> b = _slurp (file);
+          const auto entries = _entries (b, file);
+          for (const auto& kv : entries) {
+            if (kv.first.find ('/') != std::string::npos) continue;
+            if (kv.first.compare (0, 8, "offsets.") == 0)
+              return read_uint (file, kv.first);
+          }
+          throw Exception ("TRX file \"" + file + "\" has no offsets array");
+        }
+
+        //! List the named groups (groups/<name>.<dtype>) in a TRX file.
+        inline vector<std::pair<std::string,std::string>> groups (const std::string& file) {
+          const vector<uint8_t> b = _slurp (file);
+          const auto entries = _entries (b, file);
+          vector<std::pair<std::string,std::string>> out;   // (name, entry)
+          for (const auto& kv : entries) {
+            const std::string& n = kv.first;
+            if (n.compare (0, 7, "groups/") != 0) continue;
+            std::string base = n.substr (7);
+            const size_t dot = base.find_last_of ('.');
+            if (dot != std::string::npos) base = base.substr (0, dot);
+            if (base.empty()) continue;   // skip the "groups/" directory entry
+            out.push_back ({ base, n });
           }
           return out;
         }

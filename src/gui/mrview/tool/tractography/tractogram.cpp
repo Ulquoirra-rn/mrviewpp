@@ -27,7 +27,9 @@
 #include "gui/opengl/lighting.h"
 #include "gui/mrview/mode/base.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <set>
 
 const size_t MAX_BUFFER_SIZE = 2796200;  // number of points to fill 32MB
 constexpr uint32_t PRIMITIVE_RESTART_SENTINEL = 0xFFFFFFFFu; // Primitive restart index for UNSIGNED_INT
@@ -363,15 +365,17 @@ namespace MR
 
 
 
-        Tractogram::Tractogram (Tractography& tool, const std::string& filename) :
-            Displayable (filename),
+        Tractogram::Tractogram (Tractography& tool, const std::string& file_path,
+                                const std::string& display_name, const vector<size_t>& filter) :
+            Displayable (display_name.empty() ? file_path : display_name),
             show_colour_bar (true),
             original_fov (NAN),
             line_thickness (0.f),
             intensity_scalar_filename (std::string()),
             threshold_scalar_filename (std::string()),
             tractography_tool (tool),
-            filename (filename),
+            filename (file_path),
+            track_filter (filter),
             color_type (TrackColourType::Direction),
             threshold_type (TrackThresholdType::None),
             geometry_type (default_tract_geom),
@@ -638,9 +642,17 @@ namespace MR
           vector<GLint> sizes;
           size_t tck_count = 0;
 
+          // When loading a single .trx group, restrict to its streamline indices.
+          std::set<size_t> include;
+          if (track_filter.size())
+            include.insert (track_filter.begin(), track_filter.end());
+
           on_FOV_changed();
 
           while ((*file) (tck)) {
+
+            if (include.size() && !include.count (tck.get_index()))
+              continue;
 
             const size_t N = tck.size();
             if (!N) continue;
@@ -736,10 +748,16 @@ namespace MR
             return true;
           };
 
+          // When this tractogram is one .trx group, export only its streamlines.
+          std::set<size_t> include;
+          if (track_filter.size())
+            include.insert (track_filter.begin(), track_filter.end());
+
           DWI::Tractography::Streamline<float> tck;
           DWI::Tractography::TrackScalar<float> tck_scalar;
           size_t index = 0;
           while ((*reader) (tck)) {
+            if (include.size() && !include.count (tck.get_index())) { ++index; continue; }
             if (!tck.size()) { ++index; continue; }
 
             bool keep = true;
@@ -1083,15 +1101,49 @@ namespace MR
               total_vertices += size_t (s);
           }
 
+          // Some TRX writers store arrays with one trailing extra element (the
+          // same N+1 convention used for offsets); tolerate that.
+          auto matches = [] (size_t have, size_t need) { return have == need || have == need + 1; };
+
           vector<float> flat;
-          if (per_vertex) {
-            if (values.size() != total_vertices)
+
+          if (track_filter.size()) {
+            // This tractogram is one .trx group: pick out only its entries from
+            // the whole-file array. Loaded order is ascending streamline index.
+            vector<size_t> idxs (track_filter.begin(), track_filter.end());
+            std::sort (idxs.begin(), idxs.end());
+            flat.reserve (total_vertices);
+            if (per_vertex) {
+              const vector<uint64_t> offs = DWI::Tractography::TRX_Data::read_offsets (filename);
+              for (const size_t idx : idxs) {
+                const uint64_t start = (idx < offs.size()) ? offs[idx] : values.size();
+                const uint64_t end   = (idx + 1 < offs.size()) ? offs[idx + 1] : values.size();
+                for (uint64_t v = start; v < end && v < values.size(); ++v)
+                  flat.push_back (values[v]);
+              }
+            } else {
+              size_t j = 0;
+              for (size_t b = 0; b != original_track_sizes.size(); ++b)
+                for (const GLint s : original_track_sizes[b]) {
+                  const size_t idx = (j < idxs.size()) ? idxs[j] : SIZE_MAX;
+                  const float v = (idx < values.size()) ? values[idx] : NaN;
+                  for (GLint i = 0; i != s; ++i)
+                    flat.push_back (v);
+                  ++j;
+                }
+            }
+            if (flat.size() != total_vertices)
+              throw Exception ("TRX data array \"" + entry + "\" does not match this group's geometry");
+          }
+          else if (per_vertex) {
+            if (!matches (values.size(), total_vertices))
               throw Exception ("TRX dpv array \"" + entry + "\" has " + str(values.size())
                                + " values but the tractogram has " + str(total_vertices) + " vertices");
+            values.resize (total_vertices);
             flat = std::move (values);
           }
           else {
-            if (values.size() != total_tracks)
+            if (!matches (values.size(), total_tracks))
               throw Exception ("TRX dps array \"" + entry + "\" has " + str(values.size())
                                + " values but the tractogram has " + str(total_tracks) + " streamlines");
             // Expand the per-streamline values to one value per vertex.
