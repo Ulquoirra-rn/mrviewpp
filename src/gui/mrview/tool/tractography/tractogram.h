@@ -19,6 +19,7 @@
 
 #include "gui/mrview/displayable.h"
 #include "dwi/tractography/properties.h"
+#include "dwi/tractography/streamline.h"
 #include "gui/mrview/tool/tractography/tractography.h"
 
 
@@ -80,6 +81,18 @@ namespace MR
             }
             float get_threshold_min()  const { return threshold_min; }
             float get_threshold_max()  const { return threshold_max; }
+            const std::string& get_filename() const { return filename; }
+
+            // Result of re-reading this tractogram from disk and dropping any
+            // streamlines that fall entirely outside the active threshold.
+            struct FilteredTracks { NOMEMALIGN
+              vector<DWI::Tractography::Streamline<float>> tracks;
+              vector<vector<float>> dpv;   // per surviving track: one threshold value per vertex
+              vector<float> dps;           // per surviving track: a single threshold value
+              bool per_vertex = false, per_streamline = false;
+              std::string source_name;     // basename of the source file
+            };
+            void get_filtered_streamlines (FilteredTracks&) const;
 
             static TrackGeometryType default_tract_geom;
             static constexpr float default_line_thickness = 2e-3f;

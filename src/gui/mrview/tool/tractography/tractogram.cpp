@@ -675,6 +675,108 @@ namespace MR
 
 
 
+        void Tractogram::get_filtered_streamlines (FilteredTracks& out) const
+        {
+          out.tracks.clear();
+          out.dpv.clear();
+          out.dps.clear();
+          out.per_vertex = out.per_streamline = false;
+          out.source_name = Path::basename (filename);
+
+          // Which scalar file (if any) drives the active threshold.
+          std::string scalar_file;
+          if (threshold_type == TrackThresholdType::SeparateFile)
+            scalar_file = threshold_scalar_filename;
+          else if (threshold_type == TrackThresholdType::UseColourFile)
+            scalar_file = intensity_scalar_filename;
+
+          const bool discard_lower = use_discard_lower();
+          const bool discard_upper = use_discard_upper();
+          const float lower = lessthan;
+          const float upper = greaterthan;
+          const bool thresholding = (threshold_type != TrackThresholdType::None)
+                                    && !scalar_file.empty() && (discard_lower || discard_upper);
+
+          const bool per_vertex     = !scalar_file.empty() && Path::has_suffix (scalar_file, ".tsf");
+          const bool per_streamline = !scalar_file.empty() && !per_vertex;
+
+          // Re-read the streamlines from disk (vertex data is freed after the
+          // GPU upload, so it is not available in memory).
+          DWI::Tractography::Properties props;
+          std::unique_ptr<DWI::Tractography::ReaderInterface<float>> reader;
+          if (Path::has_suffix (filename, ".trk"))
+            reader.reset (new DWI::Tractography::TRKReader<float> (filename, props));
+          else if (Path::has_suffix (filename, ".trx"))
+            reader.reset (new DWI::Tractography::TRXReader<float> (filename, props));
+          else
+            reader.reset (new DWI::Tractography::Reader<float> (filename, props));
+
+          // Threshold scalar source, read in lock-step with the streamlines.
+          std::unique_ptr<DWI::Tractography::ScalarReader<float>> scalar_reader;
+          Eigen::VectorXf streamline_scalars;
+          DWI::Tractography::Properties scalar_props;
+          if (!scalar_file.empty()) {
+            try {
+              if (per_vertex)
+                scalar_reader.reset (new DWI::Tractography::ScalarReader<float> (scalar_file, scalar_props));
+              else
+                streamline_scalars = MR::load_vector<float> (scalar_file);
+            }
+            catch (Exception& E) {
+              E.display();
+              scalar_reader.reset();
+              streamline_scalars.resize (0);
+            }
+          }
+
+          auto within = [&] (const float v) {
+            if (std::isnan (v)) return false;
+            if (discard_lower && v < lower) return false;
+            if (discard_upper && v > upper) return false;
+            return true;
+          };
+
+          DWI::Tractography::Streamline<float> tck;
+          DWI::Tractography::TrackScalar<float> tck_scalar;
+          size_t index = 0;
+          while ((*reader) (tck)) {
+            if (!tck.size()) { ++index; continue; }
+
+            bool keep = true;
+            vector<float> dpv_values;
+            float dps_value = NaN;
+
+            if (per_vertex && scalar_reader) {
+              const bool have = (*scalar_reader) (tck_scalar);
+              dpv_values.resize (tck.size());
+              for (size_t i = 0; i != tck.size(); ++i)
+                dpv_values[i] = (have && i < tck_scalar.size()) ? tck_scalar[i] : float (NaN);
+              if (thresholding && have) {
+                keep = false;
+                for (size_t i = 0; i != tck.size() && !keep; ++i)
+                  if (within (dpv_values[i]))
+                    keep = true;
+              }
+            }
+            else if (per_streamline) {
+              dps_value = (index < size_t (streamline_scalars.size())) ? streamline_scalars[index] : NaN;
+              if (thresholding)
+                keep = within (dps_value);
+            }
+
+            if (keep) {
+              out.tracks.push_back (tck);
+              if (per_vertex)     out.dpv.push_back (std::move (dpv_values));
+              if (per_streamline) out.dps.push_back (dps_value);
+            }
+            ++index;
+          }
+
+          out.per_vertex = per_vertex;
+          out.per_streamline = per_streamline;
+        }
+
+
 
         void Tractogram::load_end_colours()
         {

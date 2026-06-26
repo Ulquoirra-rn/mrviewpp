@@ -14,8 +14,15 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <QMessageBox>
+#include <cstring>
+
 #include "mrtrix.h"
 #include "file/path.h"
+#include "gui/gui.h"
+#include "dwi/tractography/file.h"
+#include "dwi/tractography/file_trk_write.h"
+#include "dwi/tractography/file_trx_write.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/tool/tractography/tractography.h"
 #include "gui/dialog/file.h"
@@ -152,6 +159,12 @@ namespace MR
             hide_all_button->setCheckable (true);
             connect (hide_all_button, SIGNAL (clicked()), this, SLOT (hide_all_slot ()));
             hlayout->addWidget (hide_all_button, 1);
+
+            button = new QPushButton (this);
+            button->setToolTip (tr ("Export selected tractograms (current threshold baked in)"));
+            button->setIcon (QIcon (":/save.svg"));
+            connect (button, SIGNAL (clicked()), this, SLOT (tractogram_export_slot ()));
+            hlayout->addWidget (button, 1);
 
             main_box->addLayout (hlayout, 0);
 
@@ -477,6 +490,129 @@ namespace MR
           scalar_file_options->set_tractogram (nullptr);
           scalar_file_options->update_UI();
           window().updateGL();
+        }
+
+
+        namespace {
+
+          // Write a single filtered tractogram to one file, dispatched by suffix.
+          // (.trx here writes a standalone file with a single group.)
+          void write_filtered_tracks (const Tractogram::FilteredTracks& ft, const std::string& path)
+          {
+            if (Path::has_suffix (path, ".tck")) {
+              DWI::Tractography::Properties props;
+              DWI::Tractography::Writer<float> writer (path, props);
+              for (const auto& tck : ft.tracks)
+                writer (tck);
+            }
+            else if (Path::has_suffix (path, ".trk")) {
+              DWI::Tractography::TRKWriter writer (path);
+              for (const auto& tck : ft.tracks)
+                writer (tck);
+              writer.close();
+            }
+            else if (Path::has_suffix (path, ".trx")) {
+              DWI::Tractography::TRXWriter writer (path);
+              writer.begin_group (ft.source_name);
+              for (size_t i = 0; i != ft.tracks.size(); ++i)
+                writer.add (ft.tracks[i],
+                            ft.per_vertex     ? &ft.dpv[i] : nullptr,
+                            ft.per_streamline ? &ft.dps[i] : nullptr);
+              writer.close();
+            }
+            else
+              throw Exception ("unsupported tractography output format for \"" + path
+                               + "\" (use .tck, .trk or .trx)");
+          }
+
+          std::string strip_known_suffix (std::string name)
+          {
+            for (const char* ext : { ".tck", ".trk", ".trx" }) {
+              if (Path::has_suffix (name, ext)) {
+                name = name.substr (0, name.size() - std::strlen (ext));
+                break;
+              }
+            }
+            return name;
+          }
+        }
+
+
+        void Tractography::tractogram_export_slot ()
+        {
+          QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
+          vector<Tractogram*> selected;
+          for (QModelIndex idx : indices)
+            if (Tractogram* t = tractogram_list_model->get_tractogram (idx))
+              selected.push_back (t);
+
+          if (selected.empty()) {
+            QMessageBox::information (this, "Export tractography",
+                "Please select one or more tractograms to export.");
+            return;
+          }
+
+          const std::string suggested =
+              strip_known_suffix (Path::basename (selected[0]->get_filename())) + "_thresholded.tck";
+          std::string folder;
+          const std::string out_path = Dialog::File::get_save_name (&window(),
+              "Export tractography", suggested, "Tractograms (*.tck *.trk *.trx)", &folder);
+          if (out_path.empty())
+            return;
+
+          try {
+            if (selected.size() == 1) {
+              Tractogram::FilteredTracks ft;
+              selected[0]->get_filtered_streamlines (ft);
+              write_filtered_tracks (ft, out_path);
+              QMessageBox::information (this, "Export tractography",
+                  qstr (str (ft.tracks.size()) + " streamlines exported to:\n" + out_path));
+            }
+            else if (Path::has_suffix (out_path, ".trx")) {
+              // Combine all selected tractograms into one TRX file, each as its
+              // own group, with threshold values recorded in dpv/dps.
+              DWI::Tractography::TRXWriter writer (out_path);
+              size_t total = 0;
+              for (Tractogram* t : selected) {
+                Tractogram::FilteredTracks ft;
+                t->get_filtered_streamlines (ft);
+                writer.begin_group (ft.source_name);
+                for (size_t i = 0; i != ft.tracks.size(); ++i)
+                  writer.add (ft.tracks[i],
+                              ft.per_vertex     ? &ft.dpv[i] : nullptr,
+                              ft.per_streamline ? &ft.dps[i] : nullptr);
+                total += ft.tracks.size();
+              }
+              writer.close();
+              QMessageBox::information (this, "Export tractography",
+                  qstr (str (total) + " streamlines from " + str (selected.size())
+                        + " tractograms exported to:\n" + out_path));
+            }
+            else {
+              // Multiple tractograms, non-TRX format: one file per tractogram in
+              // the chosen directory, reusing the chosen extension.
+              const std::string dir = Path::dirname (out_path);
+              std::string ext = ".tck";
+              for (const char* e : { ".tck", ".trk", ".trx" })
+                if (Path::has_suffix (out_path, e)) { ext = e; break; }
+              size_t total = 0;
+              for (Tractogram* t : selected) {
+                Tractogram::FilteredTracks ft;
+                t->get_filtered_streamlines (ft);
+                const std::string path = Path::join (dir, strip_known_suffix (ft.source_name) + "_thresholded" + ext);
+                write_filtered_tracks (ft, path);
+                total += ft.tracks.size();
+              }
+              QMessageBox::information (this, "Export tractography",
+                  qstr (str (total) + " streamlines from " + str (selected.size())
+                        + " tractograms exported to:\n" + dir));
+            }
+          }
+          catch (Exception& E) {
+            E.display();
+            QMessageBox::critical (this, "Export tractography",
+                qstr ("Export failed:\n" + std::string (E[0])));
+          }
         }
 
 
