@@ -1006,6 +1006,110 @@ namespace MR
 
 
 
+        void Tractogram::load_threshold_scalars_from_values (const vector<float>& flat_per_vertex, const std::string& label)
+        {
+          GL::Context::Grab context;
+          GL::assert_context_is_current();
+
+          erase_threshold_scalar_data ();
+          threshold_min = std::numeric_limits<float>::infinity();
+          threshold_max = -std::numeric_limits<float>::infinity();
+          vector<float> buffer;
+          size_t running_vertex = 0;
+
+          for (size_t buffer_index = 0; buffer_index != vertex_buffers.size(); ++buffer_index) {
+            size_t num_tracks = num_tracks_per_buffer[buffer_index];
+            const vector<GLint>& track_lengths (original_track_sizes[buffer_index]);
+
+            for (size_t index = 0; index != num_tracks; ++index) {
+              const size_t L = size_t (track_lengths[index]);
+              if (!L) continue;
+              if (running_vertex + L > flat_per_vertex.size())
+                throw Exception ("data array does not match the number of streamline vertices");
+
+              const float first = flat_per_vertex[running_vertex];
+              for (size_t i = 0; i < track_padding; ++i)
+                buffer.push_back (first);
+              float last = first;
+              for (size_t i = 0; i != L; ++i) {
+                last = flat_per_vertex[running_vertex + i];
+                buffer.push_back (last);
+                threshold_max = std::max (threshold_max, last);
+                threshold_min = std::min (threshold_min, last);
+              }
+              for (size_t i = 0; i < track_padding; ++i)
+                buffer.push_back (last);
+
+              running_vertex += L;
+            }
+            load_threshold_scalars_onto_GPU (buffer, num_tracks);
+          }
+
+          assert (threshold_scalar_buffers.size() == vertex_buffers.size());
+          threshold_scalar_filename = label;
+          greaterthan = threshold_max;
+          lessthan = threshold_min;
+          GL::assert_context_is_current();
+        }
+
+
+
+        vector<Tractogram::TrxDataArray> Tractogram::get_trx_threshold_arrays () const
+        {
+          vector<TrxDataArray> out;
+          if (!Path::has_suffix (filename, ".trx"))
+            return out;
+          try {
+            for (const auto& a : DWI::Tractography::TRX_Data::list (filename))
+              out.push_back ({ a.entry, a.name, a.per_vertex });
+          }
+          catch (Exception& E) {
+            E.display();
+          }
+          return out;
+        }
+
+
+
+        void Tractogram::load_threshold_track_scalars_from_trx (const std::string& entry, bool per_vertex)
+        {
+          vector<float> values = DWI::Tractography::TRX_Data::read (filename, entry);
+
+          // Total vertex / streamline counts known from the loaded geometry.
+          size_t total_vertices = 0, total_tracks = 0;
+          for (size_t b = 0; b != original_track_sizes.size(); ++b) {
+            total_tracks += num_tracks_per_buffer[b];
+            for (const GLint s : original_track_sizes[b])
+              total_vertices += size_t (s);
+          }
+
+          vector<float> flat;
+          if (per_vertex) {
+            if (values.size() != total_vertices)
+              throw Exception ("TRX dpv array \"" + entry + "\" has " + str(values.size())
+                               + " values but the tractogram has " + str(total_vertices) + " vertices");
+            flat = std::move (values);
+          }
+          else {
+            if (values.size() != total_tracks)
+              throw Exception ("TRX dps array \"" + entry + "\" has " + str(values.size())
+                               + " values but the tractogram has " + str(total_tracks) + " streamlines");
+            // Expand the per-streamline values to one value per vertex.
+            flat.reserve (total_vertices);
+            size_t t = 0;
+            for (size_t b = 0; b != original_track_sizes.size(); ++b)
+              for (const GLint s : original_track_sizes[b]) {
+                const float v = values[t++];
+                for (GLint i = 0; i != s; ++i)
+                  flat.push_back (v);
+              }
+          }
+
+          load_threshold_scalars_from_values (flat, "trx:" + entry);
+        }
+
+
+
         void Tractogram::erase_colour_data()
         {
           GL::Context::Grab context;

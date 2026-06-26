@@ -259,6 +259,149 @@ namespace MR
       };
 
 
+      //! Helpers to inspect the optional data arrays embedded in a TRX file.
+      /*! TRX may carry per-vertex (dpv/) and per-streamline (dps/) data arrays
+       * in addition to the geometry. These let mrview offer them as threshold
+       * sources. */
+      namespace TRX_Data
+      {
+        struct Array { NOMEMALIGN
+          std::string entry;   // full ZIP entry name, e.g. "dpv/fa.float32"
+          std::string name;    // display name, e.g. "fa"
+          bool per_vertex;     // true for dpv/, false for dps/
+        };
+
+        // little-endian helpers over an in-memory buffer
+        inline uint16_t _u16 (const vector<uint8_t>& b, size_t o) { return uint16_t(b[o]) | (uint16_t(b[o+1])<<8); }
+        inline uint32_t _u32 (const vector<uint8_t>& b, size_t o) {
+          return uint32_t(b[o]) | (uint32_t(b[o+1])<<8) | (uint32_t(b[o+2])<<16) | (uint32_t(b[o+3])<<24);
+        }
+
+        inline vector<uint8_t> _slurp (const std::string& file) {
+          std::ifstream in (file, std::ios_base::in | std::ios_base::binary);
+          if (!in)
+            throw Exception ("error opening TRX file \"" + file + "\"");
+          return vector<uint8_t> ((std::istreambuf_iterator<char> (in)), std::istreambuf_iterator<char>());
+        }
+
+        // Walk the central directory, returning name -> (method, comp_size, uncomp_size, local_offset).
+        struct _Entry { NOMEMALIGN uint16_t method; uint32_t csize, usize, loff; };
+        inline std::map<std::string, _Entry> _entries (const vector<uint8_t>& b, const std::string& file) {
+          std::map<std::string, _Entry> out;
+          if (b.size() < 22)
+            throw Exception ("file \"" + file + "\" is too small to be a TRX (ZIP) file");
+          size_t eocd = b.size() - 22;
+          const size_t min_pos = b.size() > 22 + 65535 ? b.size() - 22 - 65535 : 0;
+          bool found = false;
+          for (size_t i = eocd + 1; i-- > min_pos; ) {
+            if (_u32 (b, i) == 0x06054b50) { eocd = i; found = true; break; }
+            if (i == 0) break;
+          }
+          if (!found)
+            throw Exception ("file \"" + file + "\" is not a valid TRX (ZIP) file");
+          const uint16_t n = _u16 (b, eocd + 10);
+          size_t p = _u32 (b, eocd + 16);
+          for (uint16_t e = 0; e != n; ++e) {
+            if (_u32 (b, p) != 0x02014b50)
+              throw Exception ("corrupt central directory in TRX file \"" + file + "\"");
+            const uint16_t method = _u16 (b, p + 10);
+            const uint32_t csize  = _u32 (b, p + 20);
+            const uint32_t usize  = _u32 (b, p + 24);
+            const uint16_t fnlen  = _u16 (b, p + 28);
+            const uint16_t exlen  = _u16 (b, p + 30);
+            const uint16_t cmlen  = _u16 (b, p + 32);
+            const uint32_t loff   = _u32 (b, p + 42);
+            out[std::string (reinterpret_cast<const char*> (&b[p + 46]), fnlen)] = { method, csize, usize, loff };
+            p += 46 + fnlen + exlen + cmlen;
+          }
+          return out;
+        }
+
+        inline vector<uint8_t> _extract (const vector<uint8_t>& b, const _Entry& e, const std::string& file) {
+          if (_u32 (b, e.loff) != 0x04034b50)
+            throw Exception ("corrupt local header in TRX file \"" + file + "\"");
+          const size_t data = e.loff + 30 + _u16 (b, e.loff + 26) + _u16 (b, e.loff + 28);
+          if (e.method == 0)
+            return vector<uint8_t> (b.begin() + data, b.begin() + data + e.usize);
+          if (e.method == 8) {
+            vector<uint8_t> out (e.usize);
+            z_stream s; memset (&s, 0, sizeof (s));
+            if (inflateInit2 (&s, -15) != Z_OK) throw Exception ("zlib init failed for \"" + file + "\"");
+            s.next_in = const_cast<Bytef*> (&b[data]); s.avail_in = uInt (e.csize);
+            s.next_out = out.data(); s.avail_out = uInt (e.usize);
+            const int ret = inflate (&s, Z_FINISH); inflateEnd (&s);
+            if (ret != Z_STREAM_END) throw Exception ("failed to inflate entry in \"" + file + "\"");
+            return out;
+          }
+          throw Exception ("unsupported ZIP compression method in TRX file \"" + file + "\"");
+        }
+
+        //! List the dpv/ and dps/ data arrays available in a TRX file.
+        inline vector<Array> list (const std::string& file) {
+          const vector<uint8_t> b = _slurp (file);
+          const auto entries = _entries (b, file);
+          vector<Array> out;
+          for (const auto& kv : entries) {
+            const std::string& n = kv.first;
+            bool dpv = n.compare (0, 4, "dpv/") == 0;
+            bool dps = n.compare (0, 4, "dps/") == 0;
+            if (!dpv && !dps) continue;
+            std::string base = n.substr (4);
+            const size_t dot = base.find_last_of ('.');   // strip dtype suffix
+            if (dot != std::string::npos) base = base.substr (0, dot);
+            if (base.empty()) continue;
+            out.push_back ({ n, base, dpv });
+          }
+          return out;
+        }
+
+        //! Read a named float data array (any float dtype) from a TRX file.
+        inline vector<float> read (const std::string& file, const std::string& entry) {
+          const vector<uint8_t> b = _slurp (file);
+          const auto entries = _entries (b, file);
+          auto it = entries.find (entry);
+          if (it == entries.end())
+            throw Exception ("TRX file \"" + file + "\" has no data array \"" + entry + "\"");
+          const vector<uint8_t> raw = _extract (b, it->second, file);
+          const size_t dot = entry.find_last_of ('.');
+          const std::string dtype = dot == std::string::npos ? "" : entry.substr (dot + 1);
+          vector<float> out;
+          if (dtype == "float32") {
+            out.resize (raw.size() / 4);
+            for (size_t i = 0; i != out.size(); ++i) { float v; std::memcpy (&v, &raw[4*i], 4); out[i] = v; }
+          } else if (dtype == "float64") {
+            out.resize (raw.size() / 8);
+            for (size_t i = 0; i != out.size(); ++i) { double v; std::memcpy (&v, &raw[8*i], 8); out[i] = float (v); }
+          } else if (dtype == "float16") {
+            out.resize (raw.size() / 2);
+            for (size_t i = 0; i != out.size(); ++i) {
+              uint16_t h; std::memcpy (&h, &raw[2*i], 2);
+              const uint32_t sign = (uint32_t(h) & 0x8000u) << 16; uint32_t exp = (h>>10)&0x1Fu, mant = h&0x3FFu, f;
+              if (exp == 0) { if (!mant) f = sign; else { exp = 1; while (!(mant & 0x400u)) { mant <<= 1; --exp; } mant &= 0x3FFu; f = sign | ((exp+(127-15))<<23) | (mant<<13); } }
+              else if (exp == 0x1Fu) f = sign | 0x7F800000u | (mant<<13);
+              else f = sign | ((exp+(127-15))<<23) | (mant<<13);
+              std::memcpy (&out[i], &f, 4);
+            }
+          } else {
+            // integer dtypes: interpret as scalar values
+            if (dtype == "uint32" || dtype == "int32") {
+              out.resize (raw.size() / 4);
+              for (size_t i = 0; i != out.size(); ++i) { int32_t v; std::memcpy (&v, &raw[4*i], 4); out[i] = float (v); }
+            } else if (dtype == "uint16" || dtype == "int16") {
+              out.resize (raw.size() / 2);
+              for (size_t i = 0; i != out.size(); ++i) { int16_t v; std::memcpy (&v, &raw[2*i], 2); out[i] = float (v); }
+            } else if (dtype == "uint8" || dtype == "int8" || dtype == "bool") {
+              out.resize (raw.size());
+              for (size_t i = 0; i != out.size(); ++i) out[i] = float (raw[i]);
+            } else {
+              throw Exception ("unsupported TRX data-array dtype \"" + dtype + "\" in \"" + file + "\"");
+            }
+          }
+          return out;
+        }
+      }
+
+
     }
   }
 }

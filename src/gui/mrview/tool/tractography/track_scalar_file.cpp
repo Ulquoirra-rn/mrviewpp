@@ -167,9 +167,22 @@ namespace MR
             intensity_file_button->setToolTip (tr ("Open (track) scalar file for colouring streamlines"));
           }
 
-          threshold_file_combobox->removeItem (3);
           threshold_file_combobox->blockSignals (true);
           threshold_file_combobox->setToolTip (QString());
+          // Rebuild dynamic entries: keep the 3 fixed items, then list any .trx
+          // data arrays (dpv/dps), then a trailing item for a loaded plain file.
+          while (threshold_file_combobox->count() > 3)
+            threshold_file_combobox->removeItem (3);
+          trx_threshold_arrays.clear();
+          trx_combobox_base = 3;
+          for (const auto& a : tractogram->get_trx_threshold_arrays()) {
+            trx_threshold_arrays.push_back ({ a.entry, a.per_vertex });
+            threshold_file_combobox->addItem (qstr (std::string (a.per_vertex ? "dpv: " : "dps: ") + a.name));
+          }
+
+          const std::string& tfile = tractogram->threshold_scalar_filename;
+          const bool is_trx_threshold = (tfile.compare (0, 4, "trx:") == 0);
+
           switch (tractogram->get_threshold_type()) {
             case TrackThresholdType::None:
               threshold_file_combobox->setCurrentIndex (0);
@@ -178,10 +191,19 @@ namespace MR
               threshold_file_combobox->setCurrentIndex (1);
               break;
             case TrackThresholdType::SeparateFile:
-              assert (tractogram->threshold_scalar_filename.length());
-              threshold_file_combobox->addItem (qstr (shorten (Path::basename (tractogram->threshold_scalar_filename), 35, 0)));
-              threshold_file_combobox->setToolTip (qstr (tractogram->threshold_scalar_filename));
-              threshold_file_combobox->setCurrentIndex (3);
+              assert (tfile.length());
+              if (is_trx_threshold) {
+                const std::string entry = tfile.substr (4);
+                int idx = 0;
+                for (size_t i = 0; i != trx_threshold_arrays.size(); ++i)
+                  if (trx_threshold_arrays[i].first == entry) { idx = trx_combobox_base + int (i); break; }
+                threshold_file_combobox->setToolTip (qstr (tfile));
+                threshold_file_combobox->setCurrentIndex (idx);
+              } else {
+                threshold_file_combobox->addItem (qstr (shorten (Path::basename (tfile), 35, 0)));
+                threshold_file_combobox->setToolTip (qstr (tfile));
+                threshold_file_combobox->setCurrentIndex (threshold_file_combobox->count() - 1);
+              }
               break;
           }
           threshold_file_combobox->blockSignals (false);
@@ -221,6 +243,27 @@ namespace MR
             try {
               tractogram->load_intensity_track_scalars (scalar_file);
               tractogram->set_color_type (TrackColourType::ScalarFile);
+
+              // Automatically pick up a matching threshold sidecar (.tsf/.txt) in
+              // the same folder as the scalar file, if one exists and no threshold
+              // is set yet.
+              if (tractogram->get_threshold_type() == TrackThresholdType::None) {
+                const size_t dot = scalar_file.find_last_of ('.');
+                const std::string stem = (dot == std::string::npos) ? scalar_file : scalar_file.substr (0, dot);
+                for (const char* ext : { ".tsf", ".txt" }) {
+                  const std::string cand = stem + ext;
+                  if (cand != scalar_file && Path::exists (cand)) {
+                    try {
+                      tractogram->load_threshold_track_scalars (cand);
+                      tractogram->set_threshold_type (TrackThresholdType::SeparateFile);
+                      INFO ("auto-loaded tract threshold scalar \"" + cand + "\"");
+                    } catch (Exception& e) {
+                      e.display();
+                    }
+                    break;
+                  }
+                }
+              }
             }
             catch (Exception& E) {
               E.display();
@@ -297,68 +340,58 @@ namespace MR
         bool TrackScalarFileOptions::threshold_scalar_file_slot (int /*unused*/)
         {
 
+          const int idx = threshold_file_combobox->currentIndex();
           std::string file_path;
-          switch (threshold_file_combobox->currentIndex()) {
-            case 0:
-              tractogram->set_threshold_type (TrackThresholdType::None);
+          if (idx == 0) {
+            tractogram->set_threshold_type (TrackThresholdType::None);
+            tractogram->erase_threshold_scalar_data();
+            tractogram->set_use_discard_lower (false);
+            tractogram->set_use_discard_upper (false);
+          }
+          else if (idx == 1) {
+            if (tractogram->get_color_type() == TrackColourType::ScalarFile) {
+              tractogram->set_threshold_type (TrackThresholdType::UseColourFile);
               tractogram->erase_threshold_scalar_data();
-              tractogram->set_use_discard_lower (false);
-              tractogram->set_use_discard_upper (false);
-              break;
-            case 1:
-              if (tractogram->get_color_type() == TrackColourType::ScalarFile) {
-                tractogram->set_threshold_type (TrackThresholdType::UseColourFile);
-                tractogram->erase_threshold_scalar_data();
-              } else {
-                QMessageBox::warning (QApplication::activeWindow(),
-                                      tr ("Tractogram threshold error"),
-                                      tr ("Can only threshold based on scalar file used for streamline colouring if that colour mode is active"),
-                                      QMessageBox::Ok,
-                                      QMessageBox::Ok);
-                threshold_file_combobox->blockSignals (true);
-                switch (tractogram->get_threshold_type()) {
-                  case TrackThresholdType::None: threshold_file_combobox->setCurrentIndex (0); break;
-                  case TrackThresholdType::UseColourFile: assert (0);
-                  case TrackThresholdType::SeparateFile: threshold_file_combobox->setCurrentIndex (3); break;
-                }
-                threshold_file_combobox->blockSignals (false);
-                return false;
+            } else {
+              QMessageBox::warning (QApplication::activeWindow(),
+                                    tr ("Tractogram threshold error"),
+                                    tr ("Can only threshold based on scalar file used for streamline colouring if that colour mode is active"),
+                                    QMessageBox::Ok,
+                                    QMessageBox::Ok);
+              update_UI();
+              return false;
+            }
+          }
+          else if (idx == 2) {
+            file_path = Dialog::File::get_file (this, "Select scalar text file or Track Scalar file (.tsf) to open", "", &tool->current_folder);
+            if (!file_path.empty()) {
+              try {
+                tractogram->load_threshold_track_scalars (file_path);
+                tractogram->set_threshold_type (TrackThresholdType::SeparateFile);
+              } catch (Exception& E) {
+                E.display();
+                file_path.clear();
               }
-              break;
-            case 2:
-              file_path = Dialog::File::get_file (this, "Select scalar text file or Track Scalar file (.tsf) to open", "", &tool->current_folder);
-              if (!file_path.empty()) {
-                try {
-                  tractogram->load_threshold_track_scalars (file_path);
-                  tractogram->set_threshold_type (TrackThresholdType::SeparateFile);
-                } catch (Exception& E) {
-                  E.display();
-                  file_path.clear();
-                }
-              }
-              if (file_path.empty()) {
-                threshold_file_combobox->blockSignals (true);
-                switch (tractogram->get_threshold_type()) {
-                  case TrackThresholdType::None:
-                    threshold_file_combobox->setCurrentIndex (0);
-                    break;
-                  case TrackThresholdType::UseColourFile:
-                    threshold_file_combobox->setCurrentIndex (1);
-                    break;
-                  case TrackThresholdType::SeparateFile:
-                    // Should still be an entry in the combobox corresponding to the old file
-                    threshold_file_combobox->setCurrentIndex (3);
-                    break;
-                }
-                threshold_file_combobox->blockSignals (false);
-                return false;
-              }
-              break;
-            case 3: // Re-selected the same file as used previously; do nothing
-              assert (tractogram->get_threshold_type() == TrackThresholdType::SeparateFile);
-              break;
-            default:
-              assert (0);
+            }
+            if (file_path.empty()) {
+              update_UI();
+              return false;
+            }
+          }
+          else if (idx >= trx_combobox_base && idx < trx_combobox_base + int (trx_threshold_arrays.size())) {
+            const auto& a = trx_threshold_arrays[idx - trx_combobox_base];
+            try {
+              tractogram->load_threshold_track_scalars_from_trx (a.first, a.second);
+              tractogram->set_threshold_type (TrackThresholdType::SeparateFile);
+            } catch (Exception& E) {
+              E.display();
+              update_UI();
+              return false;
+            }
+          }
+          else {
+            // Trailing item: the already-loaded separate file; nothing to do.
+            assert (tractogram->get_threshold_type() == TrackThresholdType::SeparateFile);
           }
           update_UI();
           window().updateGL();

@@ -59,6 +59,16 @@ namespace MR
             void load_end_colours();
             void load_intensity_track_scalars (const std::string&);
             void load_threshold_track_scalars (const std::string&);
+
+            // Per-vertex (dpv) / per-streamline (dps) data arrays embedded in a
+            // .trx source file, usable as threshold sources.
+            struct TrxDataArray { NOMEMALIGN
+              std::string entry;   // ZIP entry, e.g. "dpv/fa.float32"
+              std::string name;    // display name, e.g. "fa"
+              bool per_vertex;
+            };
+            vector<TrxDataArray> get_trx_threshold_arrays () const;
+            void load_threshold_track_scalars_from_trx (const std::string& entry, bool per_vertex);
             void erase_colour_data();
             void erase_intensity_scalar_data ();
             void erase_threshold_scalar_data ();
@@ -177,6 +187,10 @@ namespace MR
 
             void load_intensity_scalars_onto_GPU (vector<float>& buffer, size_t& tck_count);
             void load_threshold_scalars_onto_GPU (vector<float>& buffer, size_t& tck_count);
+
+            // Upload a flat (one value per vertex, ungrouped, unpadded) threshold
+            // scalar array, splitting it by the known per-streamline vertex counts.
+            void load_threshold_scalars_from_values (const vector<float>& flat_per_vertex, const std::string& label);
 
             void render_streamlines ();
 

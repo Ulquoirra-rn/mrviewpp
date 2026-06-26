@@ -88,6 +88,11 @@ namespace MR
               AdjustButton *threshold_lower, *threshold_upper;
               QCheckBox *threshold_upper_box, *threshold_lower_box;
 
+              // dpv/dps arrays of the current .trx tractogram, in combobox order;
+              // combobox index == trx_combobox_base + position in this vector.
+              vector<std::pair<std::string,bool>> trx_threshold_arrays;
+              int trx_combobox_base;
+
             private:
               // Required since this no longer derives from Tool::Base
               Window& window () const { return *Window::main; }
