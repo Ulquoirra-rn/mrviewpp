@@ -262,7 +262,7 @@ namespace MR
           //CONF option: IconSize
           //CONF default: 30
           //CONF The size of the icons in the main MRView toolbar.
-          setWindowTitle (tr ("MRView"));
+          setWindowTitle (tr ("mrview++"));
           setWindowIcon (QPixmap (":/mrtrix.png"));
           {
             int iconsize = MR::File::Config::get_int ("IconSize", 30);
@@ -710,7 +710,7 @@ namespace MR
 
           menu = new QMenu (tr ("Info"), this);
 
-          menu->addAction (tr ("About MRView"), this, SLOT (about_slot()));
+          menu->addAction (tr ("About mrview++"), this, SLOT (about_slot()));
           menu->addAction (tr ("About Qt"), this, SLOT (aboutQt_slot()));
           menu->addAction (tr ("OpenGL information"), this, SLOT (OpenGL_slot()));
 
@@ -1347,7 +1347,7 @@ namespace MR
         colourmap_button->colourmap_actions[cmap_index]->setChecked (true);
         invert_scale_action->setChecked (image()->scale_inverted());
         mode->image_changed_event();
-        setWindowTitle (qstr(image()->image.name()));
+        setWindowTitle (qstr("mrview++ — " + image()->image.name()));
         set_image_navigation_menu();
         image()->set_allowed_features (
             mode->features & Mode::ShaderThreshold,
@@ -1527,7 +1527,7 @@ namespace MR
       void Window::about_slot ()
       {
         std::string message =
-          std::string ("<h1>MRView</h1>The MRtrix viewer, version ") + MR::App::mrtrix_version + "<br>"
+          std::string ("<h1>mrview++</h1>The MRtrix viewer (mrview++ fork), version ") + MR::App::mrtrix_version + "<br>"
           "<em>" + str (8*sizeof (size_t)) + " bit "
 #ifdef NDEBUG
           "release"
@@ -1538,7 +1538,7 @@ namespace MR
           "<h4>Authors:</h4>" + MR::join (MR::split (MR::App::AUTHOR, ",;&\n", true), "<br>") +
           "<p><em>" + MR::App::COPYRIGHT + "</em>";
 
-        QMessageBox::about (this, tr ("About MRView"), qstr(message));
+        QMessageBox::about (this, tr ("About mrview++"), qstr(message));
       }
 
 
