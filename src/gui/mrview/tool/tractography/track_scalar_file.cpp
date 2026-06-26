@@ -239,10 +239,18 @@ namespace MR
             threshold_upper->setRate  (tractogram->get_threshold_rate());
             threshold_upper->setValue (tractogram->greaterthan);
 
-            // Map the slider across the threshold scalar's value range.
+            // Map the slider across the threshold scalar's value range, falling
+            // back to the display range when no separate-file range is available
+            // (e.g. thresholding by the colour scalar).
             thr_lo = tractogram->get_threshold_min();
             thr_hi = tractogram->get_threshold_max();
-            threshold_lower_slider->setEnabled (tractogram->use_discard_lower());
+            if (!std::isfinite (thr_lo) || !std::isfinite (thr_hi) || thr_hi <= thr_lo) {
+              thr_lo = tractogram->scaling_min();
+              thr_hi = tractogram->scaling_max();
+            }
+            // Enabled whenever a threshold is active, so dragging it sets (and
+            // turns on) the lower threshold.
+            threshold_lower_slider->setEnabled (true);
             sync_threshold_slider();
           }
         }
