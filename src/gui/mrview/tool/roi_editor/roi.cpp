@@ -671,6 +671,10 @@ namespace MR
             }
           }
 
+          // Whole-volume undo entry: capture the ROI before the 3D edit so undo
+          // restores the entire grown region (not just the seed's slice).
+          ROI_UndoEntry undo_entry (*roi);
+
           // Write the grown region back into the seed ROI.
           {
             GL::Context::Grab context;
@@ -685,8 +689,11 @@ namespace MR
               roi->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
             }
           }
+          undo_entry.capture_after (*roi);
+          roi->start (std::move (undo_entry));
           roi->saved = false;
 
+          update_undo_redo();
           updateGL();
         }
 
@@ -1220,8 +1227,18 @@ namespace MR
               if (grow_active) {
                 QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
                 if (indices.size() == 1)
-                  if (ROI_Item* roi = dynamic_cast<ROI_Item*> (list_model->get (indices[0])))
+                  if (ROI_Item* roi = dynamic_cast<ROI_Item*> (list_model->get (indices[0]))) {
+                    // Whole-volume undo entry for the committed region grow:
+                    // grow_base holds the ROI as it was before this preview.
+                    if (grow_base.size()) {
+                      ROI_UndoEntry entry (*roi);
+                      entry.before = grow_base;
+                      entry.capture_after (*roi);
+                      roi->start (std::move (entry));
+                      update_undo_redo();
+                    }
                     roi->saved = false;
+                  }
                 grow_active = false;
               }
               return true;

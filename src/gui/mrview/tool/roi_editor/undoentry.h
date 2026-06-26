@@ -42,9 +42,13 @@ namespace MR
         struct ROI_UndoEntry { MEMALIGN(ROI_UndoEntry)
 
           ROI_UndoEntry (ROI_Item&, int, int);
+          ROI_UndoEntry (ROI_Item&);            // whole-volume entry: captures the current ROI as "before"
           ROI_UndoEntry (const ROI_UndoEntry&) = delete;
           ROI_UndoEntry (ROI_UndoEntry&&);
           ~ROI_UndoEntry();
+
+          // For whole-volume entries: capture the current ROI as "after" (call after editing).
+          void capture_after (ROI_Item&);
 
           ROI_UndoEntry& operator= (const ROI_UndoEntry&) = delete;
           ROI_UndoEntry& operator= (ROI_UndoEntry&&);

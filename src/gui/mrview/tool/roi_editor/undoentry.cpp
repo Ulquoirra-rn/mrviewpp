@@ -168,6 +168,40 @@ namespace MR
 
 
 
+        ROI_UndoEntry::ROI_UndoEntry (ROI_Item& roi)
+        {
+          // Whole-volume undo entry (for 3D operations such as grow-cut / region
+          // grow that modify the ROI across many slices, not via the slice editor).
+          from = { { 0, 0, 0 } };
+          size = { { GLint(roi.header().size(0)), GLint(roi.header().size(1)), GLint(roi.header().size(2)) } };
+          slice_axes = { { 0, 1 } };
+          tex_size = { { size[0], size[1] } };
+
+          GL::Context::Grab context;
+          GL::assert_context_is_current();
+          if (!shared)
+            shared.reset (new Shared());
+          else
+            ++(*shared);
+
+          before.resize (size_t(size[0]) * size[1] * size[2]);
+          roi.texture().bind();
+          gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
+          gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&before[0]));
+          GL::assert_context_is_current();
+        }
+
+        void ROI_UndoEntry::capture_after (ROI_Item& roi)
+        {
+          GL::Context::Grab context;
+          GL::assert_context_is_current();
+          after.resize (size_t(size[0]) * size[1] * size[2]);
+          roi.texture().bind();
+          gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
+          gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&after[0]));
+          GL::assert_context_is_current();
+        }
+
         ROI_UndoEntry::ROI_UndoEntry (ROI_UndoEntry&& r) :
           from (r.from),
           size (r.size),
