@@ -48,6 +48,18 @@ echo "Re-pointing Qt references to the bundled Qt ..."
 repoint_qt "$APP/Contents/MacOS/$EXE"
 repoint_qt "$APP/Contents/lib/libmrtrix.dylib"
 
+# macOS selects native control rendering by the SDK the app was built against.
+# The macOS 26 SDK gives the new AppKit control metrics, which mis-render mrview's
+# compact tool buttons; the official build targets an older SDK (15.5) and gets
+# the legacy rendering. Rewrite the recorded build version to match so macOS uses
+# the same (correct) control rendering. (codesign below re-signs after this.)
+if command -v vtool >/dev/null 2>&1; then
+  echo "Setting legacy SDK build version (macOS 11.0 / SDK 15.5) ..."
+  vtool -arch arm64 -set-build-version macos 11.0 15.5 -replace \
+    -output "$APP/Contents/MacOS/$EXE.tmp" "$APP/Contents/MacOS/$EXE" 2>/dev/null \
+    && mv "$APP/Contents/MacOS/$EXE.tmp" "$APP/Contents/MacOS/$EXE"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
