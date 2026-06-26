@@ -709,8 +709,48 @@ namespace MR
           const bool thresholding = (threshold_type != TrackThresholdType::None)
                                     && !scalar_file.empty() && (discard_lower || discard_upper);
 
-          const bool per_vertex     = !scalar_file.empty() && Path::has_suffix (scalar_file, ".tsf");
-          const bool per_streamline = !scalar_file.empty() && !per_vertex;
+          // The threshold scalar may be a real .tsf/.txt sidecar, or a data array
+          // embedded in the source .trx (label "trx:<dpv|dps>/<name>.<dtype>").
+          const bool is_trx_scalar = scalar_file.compare (0, 4, "trx:") == 0;
+          bool per_vertex = false, per_streamline = false;
+
+          std::unique_ptr<DWI::Tractography::ScalarReader<float>> scalar_reader; // .tsf, lock-step
+          Eigen::VectorXf streamline_scalars;                                     // .txt, per-streamline
+          vector<float> trx_values;                                              // trx dpv/dps, indexed by file index
+          vector<uint64_t> trx_offsets;                                          // trx dpv vertex offsets
+          DWI::Tractography::Properties scalar_props;
+
+          if (is_trx_scalar) {
+            const std::string entry = scalar_file.substr (4);
+            per_vertex = entry.compare (0, 4, "dpv/") == 0;
+            per_streamline = !per_vertex;
+            try {
+              trx_values = DWI::Tractography::TRX_Data::read (filename, entry);
+              if (per_vertex)
+                trx_offsets = DWI::Tractography::TRX_Data::read_offsets (filename);
+            }
+            catch (Exception& E) {
+              E.display();
+              trx_values.clear();
+              per_vertex = per_streamline = false;
+            }
+          }
+          else if (!scalar_file.empty()) {
+            per_vertex = Path::has_suffix (scalar_file, ".tsf");
+            per_streamline = !per_vertex;
+            try {
+              if (per_vertex)
+                scalar_reader.reset (new DWI::Tractography::ScalarReader<float> (scalar_file, scalar_props));
+              else
+                streamline_scalars = MR::load_vector<float> (scalar_file);
+            }
+            catch (Exception& E) {
+              E.display();
+              scalar_reader.reset();
+              streamline_scalars.resize (0);
+              per_vertex = per_streamline = false;
+            }
+          }
 
           // Re-read the streamlines from disk (vertex data is freed after the
           // GPU upload, so it is not available in memory).
@@ -722,24 +762,6 @@ namespace MR
             reader.reset (new DWI::Tractography::TRXReader<float> (filename, props));
           else
             reader.reset (new DWI::Tractography::Reader<float> (filename, props));
-
-          // Threshold scalar source, read in lock-step with the streamlines.
-          std::unique_ptr<DWI::Tractography::ScalarReader<float>> scalar_reader;
-          Eigen::VectorXf streamline_scalars;
-          DWI::Tractography::Properties scalar_props;
-          if (!scalar_file.empty()) {
-            try {
-              if (per_vertex)
-                scalar_reader.reset (new DWI::Tractography::ScalarReader<float> (scalar_file, scalar_props));
-              else
-                streamline_scalars = MR::load_vector<float> (scalar_file);
-            }
-            catch (Exception& E) {
-              E.display();
-              scalar_reader.reset();
-              streamline_scalars.resize (0);
-            }
-          }
 
           auto within = [&] (const float v) {
             if (std::isnan (v)) return false;
@@ -755,21 +777,30 @@ namespace MR
 
           DWI::Tractography::Streamline<float> tck;
           DWI::Tractography::TrackScalar<float> tck_scalar;
-          size_t index = 0;
           while ((*reader) (tck)) {
-            if (include.size() && !include.count (tck.get_index())) { ++index; continue; }
-            if (!tck.size()) { ++index; continue; }
+            const size_t si = tck.get_index();
+            if (include.size() && !include.count (si)) continue;
+            if (!tck.size()) continue;
 
             bool keep = true;
             vector<float> dpv_values;
             float dps_value = NaN;
 
-            if (per_vertex && scalar_reader) {
-              const bool have = (*scalar_reader) (tck_scalar);
+            if (per_vertex) {
               dpv_values.resize (tck.size());
-              for (size_t i = 0; i != tck.size(); ++i)
-                dpv_values[i] = (have && i < tck_scalar.size()) ? tck_scalar[i] : float (NaN);
-              if (thresholding && have) {
+              if (is_trx_scalar) {
+                const uint64_t start = (si < trx_offsets.size()) ? trx_offsets[si] : trx_values.size();
+                for (size_t i = 0; i != tck.size(); ++i) {
+                  const uint64_t v = start + i;
+                  dpv_values[i] = (v < trx_values.size()) ? trx_values[v] : float (NaN);
+                }
+              }
+              else if (scalar_reader) {
+                const bool have = (*scalar_reader) (tck_scalar);
+                for (size_t i = 0; i != tck.size(); ++i)
+                  dpv_values[i] = (have && i < tck_scalar.size()) ? tck_scalar[i] : float (NaN);
+              }
+              if (thresholding) {
                 keep = false;
                 for (size_t i = 0; i != tck.size() && !keep; ++i)
                   if (within (dpv_values[i]))
@@ -777,7 +808,10 @@ namespace MR
               }
             }
             else if (per_streamline) {
-              dps_value = (index < size_t (streamline_scalars.size())) ? streamline_scalars[index] : NaN;
+              if (is_trx_scalar)
+                dps_value = (si < trx_values.size()) ? trx_values[si] : NaN;
+              else
+                dps_value = (si < size_t (streamline_scalars.size())) ? streamline_scalars[si] : NaN;
               if (thresholding)
                 keep = within (dps_value);
             }
@@ -787,7 +821,6 @@ namespace MR
               if (per_vertex)     out.dpv.push_back (std::move (dpv_values));
               if (per_streamline) out.dps.push_back (dps_value);
             }
-            ++index;
           }
 
           out.per_vertex = per_vertex;
