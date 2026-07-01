@@ -108,6 +108,7 @@ namespace MR {
           image->sequence_name = reader.sequence;
           image->image_type = image_type.first;
           image->transfer_syntax_supported = reader.transfer_syntax_supported;
+          image->transfer_syntax = reader.transfer_syntax;
           series->push_back (image);
         }
       }

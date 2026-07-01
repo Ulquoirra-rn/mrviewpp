@@ -73,6 +73,7 @@ namespace MR {
         start = data = next = NULL;
         is_BE = is_transfer_syntax_BE = false;
         transfer_syntax_supported = true;
+        transfer_syntax = TransferSyntax::Native;
         parents.clear();
 
         fmap.reset (new File::MMap (filename, read_write));
@@ -252,25 +253,48 @@ namespace MR {
           case GROUP_BYTE_ORDER:
             switch (element) {
               case ELEMENT_TRANSFER_SYNTAX_UID:
-                if (strncmp (reinterpret_cast<const char*> (data), "1.2.840.10008.1.2.1", size) == 0) {
-                  is_BE = is_transfer_syntax_BE = false; // explicit VR Little Endian
-                  is_explicit = true;
-                }
-                else if (strncmp (reinterpret_cast<const char*> (data), "1.2.840.10008.1.2.2", size) == 0) {
-                  is_BE = is_transfer_syntax_BE = true; // Explicit VR Big Endian
-                  is_explicit = true;
-                }
-                else if (strncmp (reinterpret_cast<const char*> (data), "1.2.840.10008.1.2", size) == 0) {
-                  is_BE = is_transfer_syntax_BE = false; // Implicit VR Little Endian
-                  is_explicit = false;
-                }
-                else if (strncmp (reinterpret_cast<const char*> (data), "1.2.840.10008.1.2.1.99", size) == 0) {
-                  throw Exception ("DICOM deflated explicit VR little endian transfer syntax not supported");
-                }
-                else {
-                  transfer_syntax_supported = false;
-                  INFO ("unsupported DICOM transfer syntax: \"" + std::string (reinterpret_cast<const char*> (data), size)
-                    + "\" in file \"" + fmap->name() + "\"");
+                {
+                  std::string uid (reinterpret_cast<const char*> (data), size);
+                  while (uid.size() && (uid.back() == '\0' || uid.back() == ' '))
+                    uid.pop_back();
+
+                  if (uid == "1.2.840.10008.1.2.1") {                 // Explicit VR Little Endian
+                    is_BE = is_transfer_syntax_BE = false; is_explicit = true;
+                  }
+                  else if (uid == "1.2.840.10008.1.2.2") {            // Explicit VR Big Endian
+                    is_BE = is_transfer_syntax_BE = true;  is_explicit = true;
+                  }
+                  else if (uid == "1.2.840.10008.1.2") {              // Implicit VR Little Endian
+                    is_BE = is_transfer_syntax_BE = false; is_explicit = false;
+                  }
+                  else if (uid == "1.2.840.10008.1.2.1.99") {         // Deflated Explicit VR LE
+                    // Whole-dataset zlib deflate: needs inflating before the
+                    // dataset can be parsed at all (handled separately); mark
+                    // unsupported for now so it degrades gracefully.
+                    is_BE = is_transfer_syntax_BE = false; is_explicit = true;
+                    transfer_syntax = TransferSyntax::Deflated;
+                    transfer_syntax_supported = false;
+                  }
+                  else if (uid == "1.2.840.10008.1.2.5") {            // RLE Lossless
+                    is_BE = is_transfer_syntax_BE = false; is_explicit = true;
+                    transfer_syntax = TransferSyntax::RLE;
+                  }
+                  // JPEG family (baseline .50 / extended .51 / lossless .57,.70)
+                  else if (uid == "1.2.840.10008.1.2.4.50" || uid == "1.2.840.10008.1.2.4.51" ||
+                           uid == "1.2.840.10008.1.2.4.57" || uid == "1.2.840.10008.1.2.4.70") {
+                    is_BE = is_transfer_syntax_BE = false; is_explicit = true;
+                    transfer_syntax = TransferSyntax::JPEG;
+                  }
+                  // JPEG 2000 (lossless .90 / lossy .91)
+                  else if (uid == "1.2.840.10008.1.2.4.90" || uid == "1.2.840.10008.1.2.4.91") {
+                    is_BE = is_transfer_syntax_BE = false; is_explicit = true;
+                    transfer_syntax = TransferSyntax::JPEG2000;
+                  }
+                  else {
+                    transfer_syntax_supported = false;
+                    transfer_syntax = TransferSyntax::Unsupported;
+                    INFO ("unsupported DICOM transfer syntax: \"" + uid + "\" in file \"" + fmap->name() + "\"");
+                  }
                 }
                 break;
             }

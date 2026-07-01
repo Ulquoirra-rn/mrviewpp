@@ -47,6 +47,7 @@ namespace MR {
             bvalue = G[0] = G[1] = G[2] = G_prs[0] = G_prs[1] = G_prs[2] = NaN;
             data = bits_alloc = data_size = frame_offset = 0;
             transfer_syntax_supported = true;
+            transfer_syntax = TransferSyntax::Native;
             ignore_series_num = false;
             pe_axis = 3;
             pe_sign = 0;
@@ -62,6 +63,7 @@ namespace MR {
           size_t data, bits_alloc, data_size, frame_offset;
           std::string filename, image_type;
           bool DW_scheme_wrt_image, transfer_syntax_supported, ignore_series_num;
+          TransferSyntax transfer_syntax;
           size_t pe_axis;
           int pe_sign;
           char philips_orientation;

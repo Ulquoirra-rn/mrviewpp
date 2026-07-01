@@ -21,6 +21,7 @@
 #include "image_io/mosaic.h"
 #include "image_io/null.h"
 #include "image_io/variable_scaling.h"
+#include "image_io/dicom_compressed.h"
 #include "file/dicom/mapper.h"
 #include "file/dicom/image.h"
 #include "file/dicom/series.h"
@@ -70,6 +71,7 @@ namespace MR {
         vector<Frame*> frames;
 
         bool transfer_syntax_supported = true;
+        TransferSyntax transfer_syntax = TransferSyntax::Native;
 
         // loop over series list:
         for (const auto& series_it : series) {
@@ -87,6 +89,8 @@ namespace MR {
           for (auto image_it : *series_it) {
             if (!image_it->transfer_syntax_supported)
               transfer_syntax_supported = false;
+            if (image_it->transfer_syntax != TransferSyntax::Native)
+              transfer_syntax = image_it->transfer_syntax;
 
             // if multi-frame, loop over frames in image:
             if (image_it->frames.size()) {
@@ -208,7 +212,8 @@ namespace MR {
         }
 
         size_t nchannels = image.samples_per_pixel;
-        if (nchannels == 1 && !image.frames.size() && transfer_syntax_supported) {
+        if (nchannels == 1 && !image.frames.size() && transfer_syntax_supported
+            && transfer_syntax == TransferSyntax::Native) {
           // only guess number of samples per pixel if not explicitly set in
           // DICOM and not using multi-frame:
           nchannels = image.data_size / (frame.dim[0] * frame.dim[1] * (frame.bits_alloc/8));
@@ -407,6 +412,14 @@ namespace MR {
             H.transform()(i,3) += xinc * H.transform()(i,0) + yinc * H.transform()(i,1);
 
           io_handler.reset (new MR::ImageIO::Mosaic (H, frame.dim[0], frame.dim[1], H.size (0), H.size (1), H.size (2)));
+
+        }
+        else if (transfer_syntax != TransferSyntax::Native) {
+
+          // Compressed (encapsulated) pixel data: decode each frame into RAM.
+          io_handler.reset (new MR::ImageIO::DICOMCompressed (H, transfer_syntax,
+                frame.dim[1], frame.dim[0], frame.bits_alloc, nchannels,
+                H.datatype().is_signed()));
 
         }
         else if (inconsistent_scaling) {

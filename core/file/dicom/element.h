@@ -30,6 +30,17 @@ namespace MR {
     namespace Dicom {
 
 
+      //! How a DICOM dataset's pixel data is encoded (from its transfer syntax).
+      enum class TransferSyntax {
+        Native,      // uncompressed (implicit/explicit VR, little/big endian)
+        Deflated,    // whole-dataset zlib deflate (1.2.840.10008.1.2.1.99)
+        RLE,         // RLE lossless (1.2.840.10008.1.2.5)
+        JPEG,        // JPEG baseline/extended/lossless (1.2.840.10008.1.2.4.50-.70)
+        JPEG2000,    // JPEG 2000 lossy/lossless (1.2.840.10008.1.2.4.90/.91)
+        Unsupported
+      };
+
+
       class Sequence { NOMEMALIGN
         public:
           Sequence (uint16_t group, uint16_t element, uint8_t* end) : group (group), element (element), end (end) { }
@@ -112,6 +123,7 @@ namespace MR {
           uint8_t* data;
           vector<Sequence> parents;
           bool transfer_syntax_supported;
+          TransferSyntax transfer_syntax;
 
           void set (const std::string& filename, bool force_read = false, bool read_write = false);
           bool read ();

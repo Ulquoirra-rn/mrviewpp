@@ -19,6 +19,7 @@
 
 #include <map>
 #include "mrtrix.h"
+#include "file/dicom/element.h"
 
 namespace MR {
   namespace File {
@@ -36,6 +37,7 @@ namespace MR {
           std::map<std::string, size_t> image_type;
           size_t series_number, bits_alloc, dim[2], data;
           bool transfer_syntax_supported;
+          TransferSyntax transfer_syntax;
       };
 
       std::ostream& operator<< (std::ostream& stream, const QuickScan& file);

@@ -1106,6 +1106,52 @@ int main() {
 
 
 
+# JPEG (libjpeg / libjpeg-turbo) - for JPEG-compressed DICOM:
+
+jpeg_cflags = get_flags ([], 'JPEG_CFLAGS', '--cflags libjpeg')
+jpeg_ldflags = get_flags ([ '-ljpeg' ], 'JPEG_LINKFLAGS', '--libs libjpeg')
+
+if compile_test ('JPEG library', cpp_flags + jpeg_cflags, ld_flags + jpeg_ldflags, '''
+#include <cstdio>
+extern "C" {
+#include <jpeglib.h>
+}
+
+int main() {
+  struct jpeg_decompress_struct cinfo;
+  struct jpeg_error_mgr jerr;
+  cinfo.err = jpeg_std_error (&jerr);
+  return (0);
+}
+''', on_failure='not found - JPEG-compressed DICOM support disabled'):
+  cpp_flags += [ '-DMRTRIX_JPEG_SUPPORT' ] + jpeg_cflags
+  ld_flags += jpeg_ldflags
+  ld_lib_flags += jpeg_ldflags
+
+
+
+
+# OpenJPEG - for JPEG 2000-compressed DICOM:
+
+openjpeg_cflags = get_flags ([], 'OPENJPEG_CFLAGS', '--cflags libopenjp2')
+openjpeg_ldflags = get_flags ([ '-lopenjp2' ], 'OPENJPEG_LINKFLAGS', '--libs libopenjp2')
+
+if compile_test ('OpenJPEG library', cpp_flags + openjpeg_cflags, ld_flags + openjpeg_ldflags, '''
+#include <openjpeg.h>
+
+int main() {
+  opj_codec_t* codec = opj_create_decompress (OPJ_CODEC_J2K);
+  opj_destroy_codec (codec);
+  return (0);
+}
+''', on_failure='not found - JPEG 2000-compressed DICOM support disabled'):
+  cpp_flags += [ '-DMRTRIX_JPEG2000_SUPPORT' ] + openjpeg_cflags
+  ld_flags += openjpeg_ldflags
+  ld_lib_flags += openjpeg_ldflags
+
+
+
+
 
 
 # FFTW:

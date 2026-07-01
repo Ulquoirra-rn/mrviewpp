@@ -45,6 +45,7 @@ namespace MR {
         sequence.clear();
         series_number = bits_alloc = dim[0] = dim[1] = data = 0;
         transfer_syntax_supported = true;
+        transfer_syntax = TransferSyntax::Native;
 
         {
           Element item;
@@ -126,6 +127,7 @@ namespace MR {
             ++image_type[current_image_type];
 
             transfer_syntax_supported = item.transfer_syntax_supported;
+            transfer_syntax = item.transfer_syntax;
 
           }
           catch (Exception& E) {
