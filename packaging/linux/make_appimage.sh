@@ -36,7 +36,7 @@ Name=mrview++
 GenericName=Medical Image Viewer
 Exec=mrview++ %F
 Icon=mrview++
-Categories=Science;MedicalImaging;Graphics;
+Categories=Science;MedicalSoftware;
 Terminal=false
 EOF
 

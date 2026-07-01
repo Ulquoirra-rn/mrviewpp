@@ -87,6 +87,7 @@ jobs:
             mingw-w64-x86_64-openjpeg2 python
       - name: Build
         run: |
+          export EIGEN_CFLAGS="-I/mingw64/include/eigen3"
           ./configure
           ./build bin/mrview
       - name: Stage self-contained dist
