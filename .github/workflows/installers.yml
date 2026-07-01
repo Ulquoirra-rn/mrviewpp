@@ -80,8 +80,8 @@ jobs:
           msystem: MINGW64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc mingw-w64-x86_64-qt5-base
-            mingw-w64-x86_64-qt5-svg mingw-w64-x86_64-eigen3
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-qt5
+            mingw-w64-x86_64-eigen3 mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-zlib mingw-w64-x86_64-libtiff
             mingw-w64-x86_64-libpng mingw-w64-x86_64-libjpeg-turbo
             mingw-w64-x86_64-openjpeg2 python
@@ -94,9 +94,13 @@ jobs:
         run: |
           mkdir -p dist
           cp bin/mrview.exe dist/mrview++.exe
-          cp lib/libmrtrix.dll dist/ 2>/dev/null || true
+          cp lib/libmrtrix.dll dist/ 2>/dev/null || cp bin/libmrtrix.dll dist/ 2>/dev/null || true
           windeployqt --release --no-translations dist/mrview++.exe
-          for dll in $(ldd dist/mrview++.exe | grep -i mingw64 | awk '{print $3}'); do cp -u "$dll" dist/; done
+          # copy every non-Windows-system DLL the exe needs (mingw runtime,
+          # libmrtrix, image codecs) that windeployqt didn't already place.
+          for dll in $(ldd dist/mrview++.exe | awk '{print $3}' | grep -iE '/(mingw64|build)/' ); do
+            cp -u "$dll" dist/ 2>/dev/null || true
+          done
       - name: Portable zip (unzip-and-run)
         uses: actions/upload-artifact@v4
         with: { name: mrview++-windows-portable, path: "dist" }
