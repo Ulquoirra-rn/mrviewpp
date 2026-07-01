@@ -16,6 +16,9 @@
 
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <algorithm>
+#include <limits>
 
 #include "app.h"
 #include "progressbar.h"
@@ -57,32 +60,29 @@ namespace MR
 
       // Parse encapsulated pixel-data (Basic Offset Table + fragment items) that
       // begins at the start of \a enc, returning the concatenated fragment bytes
-      // for the (single) frame. (Common single-frame-per-file case.)
-      vector<uint8_t> concat_fragments (const vector<uint8_t>& enc)
+      // Parse encapsulated pixel-data starting at the beginning of \a enc into a
+      // list of fragments (the Basic Offset Table item is skipped). One frame is
+      // usually a single fragment; multi-frame files store one fragment per frame.
+      vector<vector<uint8_t>> parse_fragments (const vector<uint8_t>& enc)
       {
-        vector<uint8_t> frame;
+        vector<vector<uint8_t>> frags;
         size_t p = 0;
         bool skipped_bot = false;
         while (p + 8 <= enc.size()) {
           const uint16_t g = u16(enc,p), e = u16(enc,p+2);
           const uint32_t len = u32(enc,p+4);
           p += 8;
-          if (g != 0xFFFE)
-            break;
-          if (e == 0xE0DD)               // sequence delimitation -> done
-            break;
-          if (e != 0xE000)               // not an item -> stop
-            break;
-          if (p + len > enc.size())
-            break;
-          if (!skipped_bot) {            // first item is the Basic Offset Table
+          if (g != 0xFFFE) break;
+          if (e == 0xE0DD) break;        // sequence delimitation -> done
+          if (e != 0xE000) break;        // not an item -> stop
+          if (p + len > enc.size()) break;
+          if (!skipped_bot)              // first item is the Basic Offset Table
             skipped_bot = true;
-          } else {
-            frame.insert (frame.end(), enc.begin() + p, enc.begin() + p + len);
-          }
+          else
+            frags.emplace_back (enc.begin() + p, enc.begin() + p + len);
           p += len;
         }
-        return frame;
+        return frags;
       }
 
       // DICOM RLE (PS3.5 Annex G): a 64-byte header (number of segments + 32-bit
@@ -143,30 +143,67 @@ namespace MR
       const size_t bytes = bits / 8;
       const size_t seg_bytes = rows * cols * samples * bytes;
 
+      // Total number of frames (slices/volumes) across all dimensions above 2D.
+      size_t total_voxels = 1;
+      for (size_t d = 0; d != header.ndim(); ++d)
+        total_voxels *= header.size(d);
+      const size_t n_frames = std::max<size_t> (1, total_voxels / (rows * cols * samples));
+
+      // A frame's compressed bytes may be stored one-per-file (classic single
+      // frame per file) or one-fragment-per-frame within a single encapsulated
+      // pixel-data element (multi-frame file). Collect the encapsulated data from
+      // each unique file (using the earliest recorded offset for that file, which
+      // is the true start of the pixel data) and build the list of frame streams.
+      vector<std::string> order;
+      std::map<std::string, int64_t> start_of;
+      for (const auto& f : files) {
+        auto it = start_of.find (f.name);
+        if (it == start_of.end()) { start_of[f.name] = f.start; order.push_back (f.name); }
+        else if (f.start < it->second) it->second = f.start;
+      }
+
+      vector<vector<uint8_t>> streams;
+      const bool one_frame_per_file = (order.size() == n_frames);
+      for (const std::string& name : order) {
+        const vector<uint8_t> enc = read_from (name, start_of[name]);
+        vector<vector<uint8_t>> frags = parse_fragments (enc);
+        if (one_frame_per_file) {
+          // concatenate this file's fragments into a single frame
+          vector<uint8_t> f;
+          for (auto& fr : frags) f.insert (f.end(), fr.begin(), fr.end());
+          streams.push_back (std::move (f));
+        } else {
+          for (auto& fr : frags)
+            streams.push_back (std::move (fr));
+        }
+      }
+      if (streams.size() != n_frames)
+        WARN ("DICOM image \"" + header.name() + "\": found " + str(streams.size())
+              + " compressed frame(s) but expected " + str(n_frames));
+
       addresses.resize (1);
-      addresses[0].reset (new uint8_t [files.size() * seg_bytes]);
+      addresses[0].reset (new uint8_t [n_frames * seg_bytes]);
       if (!addresses[0])
         throw Exception ("failed to allocate memory for image \"" + header.name() + "\"");
-      memset (addresses[0].get(), 0, files.size() * seg_bytes);
+      memset (addresses[0].get(), 0, n_frames * seg_bytes);
 
-      ProgressBar progress ("decompressing DICOM data", files.size());
-      for (size_t n = 0; n < files.size(); ++n) {
-        const vector<uint8_t> enc = read_from (files[n].name, files[n].start);
-        const vector<uint8_t> frame = concat_fragments (enc);
-
+      ProgressBar progress ("decompressing DICOM data", n_frames);
+      for (size_t n = 0; n < n_frames; ++n) {
         vector<uint8_t> raw;
-        switch (codec) {
-          case TransferSyntax::RLE:
-            raw = decode_rle (frame, rows, cols, bits, samples);
-            break;
-          case TransferSyntax::JPEG:
-            raw = File::Dicom::decode_jpeg (frame, rows, cols, bits, samples, is_signed);
-            break;
-          case TransferSyntax::JPEG2000:
-            raw = File::Dicom::decode_jpeg2000 (frame, rows, cols, bits, samples, is_signed);
-            break;
-          default:
-            throw Exception ("internal error: unhandled DICOM compression codec");
+        if (n < streams.size()) {
+          switch (codec) {
+            case TransferSyntax::RLE:
+              raw = decode_rle (streams[n], rows, cols, bits, samples);
+              break;
+            case TransferSyntax::JPEG:
+              raw = File::Dicom::decode_jpeg (streams[n], rows, cols, bits, samples, is_signed);
+              break;
+            case TransferSyntax::JPEG2000:
+              raw = File::Dicom::decode_jpeg2000 (streams[n], rows, cols, bits, samples, is_signed);
+              break;
+            default:
+              throw Exception ("internal error: unhandled DICOM compression codec");
+          }
         }
         if (raw.size() < seg_bytes)
           raw.resize (seg_bytes, 0);
