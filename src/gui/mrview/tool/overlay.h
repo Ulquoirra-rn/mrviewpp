@@ -116,6 +116,7 @@ namespace MR
              }
 
              void add_images (vector<std::unique_ptr<MR::Header>>& list);
+             void load_all_volumes (Item* overlay);
              void dropEvent (QDropEvent* event) override;
         };
 

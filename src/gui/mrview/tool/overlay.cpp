@@ -828,11 +828,63 @@ namespace MR
         void Overlay::right_click_menu_slot (const QPoint& pos)
         {
           QModelIndex index = image_list_view->indexAt (pos);
-          if (index.isValid()) {
-            QPoint globalPos = image_list_view->mapToGlobal (pos);
-            image_list_view->selectionModel()->select(index, QItemSelectionModel::Select);
-            colourmap_button->open_menu (globalPos);
+          if (!index.isValid())
+            return;
+          const QPoint globalPos = image_list_view->mapToGlobal (pos);
+          image_list_view->selectionModel()->select (index, QItemSelectionModel::Select);
+          Item* overlay = image_list_model->get_image (index);
+
+          // For a 4D overlay, offer to split it into one coloured overlay per volume.
+          if (overlay && overlay->header().ndim() >= 4 && overlay->header().size(3) > 1) {
+            QMenu menu (this);
+            QAction* load_vols = menu.addAction (tr ("Load all volumes (separate colours)"));
+            menu.addSeparator();
+            QAction* cmap = menu.addAction (tr ("Colour map / options…"));
+            QAction* chosen = menu.exec (globalPos);
+            if (chosen == load_vols)
+              load_all_volumes (overlay);
+            else if (chosen == cmap)
+              colourmap_button->open_menu (globalPos);
+            return;
           }
+
+          colourmap_button->open_menu (globalPos);
+        }
+
+
+        void Overlay::load_all_volumes (Item* overlay)
+        {
+          if (!overlay || overlay->header().ndim() < 4)
+            return;
+          const size_t nvol = overlay->header().size(3);
+          const std::string fname = overlay->image.name();
+
+          vector<std::unique_ptr<MR::Header>> headers;
+          try {
+            for (size_t v = 0; v != nvol; ++v)
+              headers.push_back (make_unique<MR::Header> (MR::Header::open (fname)));
+          }
+          catch (Exception& e) {
+            e.display();
+            return;
+          }
+
+          const size_t first = image_list_model->rowCount();
+          add_images (headers);
+
+          // Pin each new overlay to one volume and give it a distinct solid colour.
+          for (size_t v = 0; v != nvol; ++v) {
+            QModelIndex idx = image_list_model->index (first + v, 0, QModelIndex());
+            Item* o = image_list_model->get_image (idx);
+            if (!o)
+              continue;
+            if (o->image.ndim() > 3)
+              o->image.index(3) = v;
+            o->colourmap = 7;   // "Colour" solid-colour map
+            o->set_colour (distinct_colour (v));
+            o->set_filename (overlay_stem (fname) + " [vol " + str(v) + "]");
+          }
+          updateGL();
         }
 
 
