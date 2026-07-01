@@ -23,6 +23,8 @@ SYS_QT_PLUGINS="/usr/local/mrtrix3/bin/plugins"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/lib" "$APP/Contents/PlugIns" "$APP/Contents/Resources"
 cp bin/mrview "$APP/Contents/MacOS/$EXE"
+# App icon: the mrview brain with a "++" badge (see icons/mrview++.icns).
+[ -f icons/mrview++.icns ] && cp "icons/mrview++.icns" "$APP/Contents/Resources/$EXE.icns"
 [ -f icons/mrtrix.png ] && cp icons/mrtrix.png "$APP/Contents/Resources/$EXE.png"
 # qt.conf so Qt finds the bundled plugins (works for double-click / `open` too).
 printf '[Paths]\nPlugins = PlugIns\n' > "$APP/Contents/Resources/qt.conf"
@@ -69,6 +71,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>ai.brainsight.mrviewpp</string>
   <key>CFBundleName</key><string>mrview++</string>
   <key>CFBundleDisplayName</key><string>mrview++</string>
+  <key>CFBundleIconFile</key><string>$EXE.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>3.0</string>
   <key>CFBundleVersion</key><string>3.0</string>
