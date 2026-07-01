@@ -111,6 +111,8 @@ namespace MR
 
              void load (vector<std::unique_ptr<MR::Header>>& list);
              void save (ROI_Item*);
+             void write_roi_mask (ROI_Item*, const std::string& path);
+             void save_label_map (const vector<ROI_Item*>&, const std::string& path);
 
              // Interactive scroll-driven 2D region-grow state:
              bool grow_active;
