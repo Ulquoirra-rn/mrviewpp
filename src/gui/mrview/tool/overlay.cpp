@@ -347,71 +347,131 @@ namespace MR
         }
 
 
-        void Overlay::image_export_slot ()
-        {
-          QModelIndexList indexes = image_list_view->selectionModel()->selectedIndexes();
-          if (indexes.size() != 1) {
-            QMessageBox::information (this, "Export overlay",
-                "Please select exactly one overlay to export.");
-            return;
-          }
-          QModelIndex index = indexes.first();
-          Item* overlay = image_list_model->get_image (index);
-          if (!overlay)
-            return;
+        namespace {
 
-          // Suggest a name derived from the source, defaulting to a NIfTI file.
-          std::string suggested = Path::basename (overlay->image.name());
-          {
-            size_t dot = suggested.find_last_of ('.');
+          // Basename without its image extension (handles .nii.gz etc.).
+          std::string overlay_stem (const std::string& name) {
+            std::string s = Path::basename (name);
+            const size_t dot = s.find_last_of ('.');
             if (dot != std::string::npos) {
-              // Strip a trailing .nii.gz / .mif.gz etc.
-              std::string stem = suggested.substr (0, dot);
-              size_t dot2 = stem.find_last_of ('.');
-              if (dot != std::string::npos && suggested.substr (dot) == ".gz" && dot2 != std::string::npos)
+              std::string stem = s.substr (0, dot);
+              const size_t dot2 = stem.find_last_of ('.');
+              if (s.substr (dot) == ".gz" && dot2 != std::string::npos)
                 stem = stem.substr (0, dot2);
-              suggested = stem;
+              s = stem;
             }
-            suggested += "_thresholded.nii.gz";
+            return s;
           }
 
-          std::string fname = Dialog::File::get_save_image_name (this, "Export overlay", suggested);
-          if (fname.empty())
-            return;
-
-          const bool discard_lower = overlay->use_discard_lower();
-          const bool discard_upper = overlay->use_discard_upper();
-          const float lower = overlay->lessthan;
-          const float upper = overlay->greaterthan;
-
-          try {
-            // Work on a copy of the (in-memory) overlay data. The displayed
-            // overlay is held as cfloat; we export the real component as float32
-            // so that thresholded-out voxels can be represented as NaN.
+          // Write one overlay to a Float32 image with its threshold baked to NaN.
+          void write_thresholded_overlay (Image* overlay, const std::string& path)
+          {
+            const bool dl = overlay->use_discard_lower();
+            const bool du = overlay->use_discard_upper();
+            const float lo = overlay->lessthan, hi = overlay->greaterthan;
             MR::Image<cfloat> in (overlay->image);
             MR::Header header (overlay->header());
             header.datatype() = MR::DataType::Float32;
             header.datatype().set_byte_order_native();
-            header.keyval()["mrview_threshold_lower"] = discard_lower ? str(lower) : "none";
-            header.keyval()["mrview_threshold_upper"] = discard_upper ? str(upper) : "none";
-
-            auto out = MR::Image<float>::create (fname, header);
-
+            header.keyval()["mrview_threshold_lower"] = dl ? str(lo) : "none";
+            header.keyval()["mrview_threshold_upper"] = du ? str(hi) : "none";
+            auto out = MR::Image<float>::create (path, header);
             const float nan = std::numeric_limits<float>::quiet_NaN();
-            for (auto l = MR::Loop("exporting overlay", in) (in, out); l; ++l) {
+            for (auto l = MR::Loop(in) (in, out); l; ++l) {
               cfloat cv = in.value();
               float v = cv.real();
-              if ((discard_lower && v < lower) || (discard_upper && v > upper))
+              if ((dl && v < lo) || (du && v > hi))
                 v = nan;
               out.value() = v;
             }
-            QMessageBox::information (this, "Export overlay",
-                qstr ("Overlay exported to:\n" + fname));
+          }
+
+          // Stack N same-grid overlays into one 4D image (threshold baked per volume).
+          void write_overlays_4d (const vector<Image*>& overlays, const std::string& path)
+          {
+            Image* first = overlays[0];
+            for (Image* o : overlays)
+              for (size_t a = 0; a != 3; ++a)
+                if (o->header().size(a) != first->header().size(a))
+                  throw Exception ("selected overlays have different dimensions; cannot stack into one 4D image");
+
+            MR::Header header (first->header());
+            header.ndim() = 4;
+            header.size(3) = overlays.size();
+            header.spacing(3) = 1.0;
+            header.stride(3) = 4;
+            header.datatype() = MR::DataType::Float32;
+            header.datatype().set_byte_order_native();
+            auto out = MR::Image<float>::create (path, header);
+
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            for (size_t v = 0; v != overlays.size(); ++v) {
+              Image* o = overlays[v];
+              const bool dl = o->use_discard_lower();
+              const bool du = o->use_discard_upper();
+              const float lo = o->lessthan, hi = o->greaterthan;
+              MR::Image<cfloat> in (o->image);
+              out.index(3) = v;
+              for (auto l = MR::Loop(0, 3) (in, out); l; ++l) {
+                cfloat cv = in.value();
+                float val = cv.real();
+                if ((dl && val < lo) || (du && val > hi))
+                  val = nan;
+                out.value() = val;
+              }
+            }
+          }
+        }
+
+
+        void Overlay::image_export_slot ()
+        {
+          QModelIndexList indexes = image_list_view->selectionModel()->selectedIndexes();
+          vector<Item*> overlays;
+          for (QModelIndex idx : indexes)
+            if (Item* o = image_list_model->get_image (idx))
+              overlays.push_back (o);
+
+          if (overlays.empty()) {
+            QMessageBox::information (this, "Export overlay", "Please select one or more overlays to export.");
+            return;
+          }
+
+          try {
+            if (overlays.size() == 1) {
+              const std::string suggested = overlay_stem (overlays[0]->image.name()) + "_thresholded.nii.gz";
+              const std::string fname = Dialog::File::get_save_image_name (this, "Export overlay", suggested);
+              if (fname.empty()) return;
+              write_thresholded_overlay (overlays[0], fname);
+              QMessageBox::information (this, "Export overlay", qstr ("Overlay exported to:\n" + fname));
+              return;
+            }
+
+            const Dialog::File::MultiSaveMode mode =
+                Dialog::File::ask_multi_save_mode (this, str(overlays.size()) + " overlays");
+            if (mode == Dialog::File::MultiSaveMode::Cancel)
+              return;
+
+            if (mode == Dialog::File::MultiSaveMode::SingleFile) {
+              const std::string suggested = "overlays_4d.nii.gz";
+              const std::string fname = Dialog::File::get_save_image_name (this, "Export overlays as 4D image", suggested);
+              if (fname.empty()) return;
+              write_overlays_4d (vector<Image*> (overlays.begin(), overlays.end()), fname);
+              QMessageBox::information (this, "Export overlays",
+                  qstr (str(overlays.size()) + " overlays exported as 4D image:\n" + fname));
+            }
+            else {
+              std::string folder = Dialog::File::get_folder (this, "Select folder for exported overlays");
+              if (folder.empty()) return;
+              for (Item* o : overlays)
+                write_thresholded_overlay (o, Path::join (folder, overlay_stem (o->image.name()) + "_thresholded.nii.gz"));
+              QMessageBox::information (this, "Export overlays",
+                  qstr (str(overlays.size()) + " overlays exported to:\n" + folder));
+            }
           }
           catch (Exception& E) {
             E.display();
-            QMessageBox::critical (this, "Export overlay",
-                qstr ("Failed to export overlay:\n" + std::string (E[0])));
+            QMessageBox::critical (this, "Export overlay", qstr ("Failed to export overlay:\n" + std::string (E[0])));
           }
         }
 

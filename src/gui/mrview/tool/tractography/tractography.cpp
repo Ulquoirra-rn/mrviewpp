@@ -619,25 +619,36 @@ namespace MR
             return;
           }
 
-          const std::string suggested =
-              strip_known_suffix (Path::basename (selected[0]->get_filename())) + "_thresholded.tck";
-          std::string folder;
-          const std::string out_path = Dialog::File::get_save_name (&window(),
-              "Export tractography", suggested, "Tractograms (*.tck *.trk *.trx)", &folder);
-          if (out_path.empty())
-            return;
-
           try {
             if (selected.size() == 1) {
+              // Single tractogram: plain save in any supported format.
+              const std::string suggested =
+                  strip_known_suffix (Path::basename (selected[0]->get_filename())) + "_thresholded.tck";
+              const std::string out_path = Dialog::File::get_save_name (this,
+                  "Export tractogram", suggested, "Tractograms (*.tck *.trk *.trx)");
+              if (out_path.empty())
+                return;
               Tractogram::FilteredTracks ft;
               selected[0]->get_filtered_streamlines (ft);
               write_filtered_tracks (ft, out_path);
               QMessageBox::information (this, "Export tractography",
                   qstr (str (ft.tracks.size()) + " streamlines exported to:\n" + out_path));
+              return;
             }
-            else if (Path::has_suffix (out_path, ".trx")) {
-              // Combine all selected tractograms into one TRX file, each as its
-              // own group, with threshold values recorded in dpv/dps.
+
+            const Dialog::File::MultiSaveMode mode =
+                Dialog::File::ask_multi_save_mode (this, str(selected.size()) + " tractograms");
+            if (mode == Dialog::File::MultiSaveMode::Cancel)
+              return;
+
+            if (mode == Dialog::File::MultiSaveMode::SingleFile) {
+              // A single combined file must be .trx (only format with groups).
+              std::string out_path = Dialog::File::get_save_name (this,
+                  "Export tractograms as a single .trx", "tractograms.trx", "TRX (*.trx)");
+              if (out_path.empty())
+                return;
+              if (!Path::has_suffix (out_path, ".trx"))
+                out_path += ".trx";
               DWI::Tractography::TRXWriter writer (out_path);
               size_t total = 0;
               for (Tractogram* t : selected) {
@@ -656,23 +667,20 @@ namespace MR
                         + " tractograms exported to:\n" + out_path));
             }
             else {
-              // Multiple tractograms, non-TRX format: one file per tractogram in
-              // the chosen directory, reusing the chosen extension.
-              const std::string dir = Path::dirname (out_path);
-              std::string ext = ".tck";
-              for (const char* e : { ".tck", ".trk", ".trx" })
-                if (Path::has_suffix (out_path, e)) { ext = e; break; }
+              // Individual files, one .tck per tractogram, into the chosen folder.
+              const std::string folder = Dialog::File::get_folder (this, "Select folder for exported tractograms");
+              if (folder.empty())
+                return;
               size_t total = 0;
               for (Tractogram* t : selected) {
                 Tractogram::FilteredTracks ft;
                 t->get_filtered_streamlines (ft);
-                const std::string path = Path::join (dir, strip_known_suffix (ft.source_name) + "_thresholded" + ext);
-                write_filtered_tracks (ft, path);
+                write_filtered_tracks (ft, Path::join (folder, strip_known_suffix (ft.source_name) + "_thresholded.tck"));
                 total += ft.tracks.size();
               }
               QMessageBox::information (this, "Export tractography",
                   qstr (str (total) + " streamlines from " + str (selected.size())
-                        + " tractograms exported to:\n" + dir));
+                        + " tractograms exported to:\n" + folder));
             }
           }
           catch (Exception& E) {
