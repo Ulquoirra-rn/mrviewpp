@@ -1,0 +1,107 @@
+name: installers
+
+# Builds out-of-the-box mrview++ installers on each native OS and uploads them
+# as artifacts. Trigger manually from the Actions tab (workflow_dispatch).
+# NOTE: only the macOS packaging is verified locally; the Linux/Windows jobs are
+# a working starting point and may need minor dependency tweaks per runner image.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------- macOS ----
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install qt@5 eigen libtiff libpng jpeg-turbo openjpeg pkg-config
+      - name: Build
+        run: |
+          export PATH="$(brew --prefix qt@5)/bin:$PATH"
+          export EIGEN_CFLAGS="-isystem $(brew --prefix eigen)/include/eigen3"
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix openjpeg)/lib/pkgconfig"
+          ./configure
+          ./build bin/mrview
+      - name: Package .dmg (macdeployqt)
+        run: |
+          export PATH="$(brew --prefix qt@5)/bin:$PATH"
+          APP=mrview++.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp bin/mrview "$APP/Contents/MacOS/mrview++"
+          cp lib/libmrtrix.dylib "$APP/Contents/MacOS/"
+          cp icons/mrview++.icns "$APP/Contents/Resources/mrview++.icns"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>mrview++</string>
+            <key>CFBundleIdentifier</key><string>ai.brainsight.mrviewpp</string>
+            <key>CFBundleName</key><string>mrview++</string>
+            <key>CFBundleIconFile</key><string>mrview++.icns</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          install_name_tool -add_rpath @loader_path/../MacOS "$APP/Contents/MacOS/mrview++" || true
+          macdeployqt "$APP" -dmg
+          mv mrview++.dmg mrview++-macos.dmg || mv *.dmg mrview++-macos.dmg
+      - uses: actions/upload-artifact@v4
+        with: { name: mrview++-macos, path: "*.dmg" }
+
+  # ---------------------------------------------------------------- Ubuntu ---
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ python3 zlib1g-dev libeigen3-dev \
+            qtbase5-dev libqt5opengl5-dev libqt5svg5-dev \
+            libtiff-dev libpng-dev libjpeg-dev libopenjp2-7-dev \
+            libgl1-mesa-dev wget file
+      - name: Build
+        run: |
+          ./configure
+          ./build bin/mrview
+      - name: Package AppImage
+        run: bash packaging/linux/make_appimage.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: mrview++-linux, path: "*.AppImage" }
+
+  # --------------------------------------------------------------- Windows ---
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run: { shell: 'msys2 {0}' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-svg mingw-w64-x86_64-eigen3
+            mingw-w64-x86_64-zlib mingw-w64-x86_64-libtiff
+            mingw-w64-x86_64-libpng mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-openjpeg2 python
+      - name: Build
+        run: |
+          ./configure
+          ./build bin/mrview
+      - name: Stage self-contained dist
+        run: |
+          mkdir -p dist
+          cp bin/mrview.exe dist/mrview++.exe
+          cp lib/libmrtrix.dll dist/ 2>/dev/null || true
+          windeployqt --release --no-translations dist/mrview++.exe
+          for dll in $(ldd dist/mrview++.exe | grep -i mingw64 | awk '{print $3}'); do cp -u "$dll" dist/; done
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          # generate .ico from the PNG for the installer
+          magick convert icons/mrview++.png -define icon:auto-resize=256,128,64,48,32,16 packaging/windows/mrviewpp.ico || copy icons\mrview++.png packaging\windows\mrviewpp.ico
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows\mrviewpp.iss
+      - uses: actions/upload-artifact@v4
+        with: { name: mrview++-windows, path: "Output/*.exe" }
