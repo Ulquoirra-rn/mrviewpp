@@ -472,7 +472,7 @@ namespace MR
         void Tractography::tractogram_open_slot ()
         {
 
-          vector<std::string> list = Dialog::File::get_files (this, "Select tractograms to open", "Tractograms (*.tck *.trk *.trx)", &current_folder);
+          vector<std::string> list = Dialog::File::get_files (this, "Select tractograms to open", "Tractograms (*.tck *.trk *.trx *.dcm)", &current_folder);
           add_tractogram(list);
         }
 

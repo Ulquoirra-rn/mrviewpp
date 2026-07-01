@@ -22,6 +22,7 @@
 #include "dwi/tractography/file.h"
 #include "dwi/tractography/file_trk.h"
 #include "dwi/tractography/file_trx.h"
+#include "dwi/tractography/file_dicom.h"
 #include "dwi/tractography/properties.h"
 #include "dwi/tractography/scalar_file.h"
 #include "gui/opengl/lighting.h"
@@ -634,6 +635,8 @@ namespace MR
             file.reset (new DWI::Tractography::TRKReader<float> (filename, properties));
           else if (Path::has_suffix (filename, ".trx"))
             file.reset (new DWI::Tractography::TRXReader<float> (filename, properties));
+          else if (Path::has_suffix (filename, ".dcm"))
+            file.reset (new DWI::Tractography::DICOMTrackReader<float> (filename, properties));
           else
             file.reset (new DWI::Tractography::Reader<float> (filename, properties));
           DWI::Tractography::Streamline<float> tck;
@@ -760,6 +763,8 @@ namespace MR
             reader.reset (new DWI::Tractography::TRKReader<float> (filename, props));
           else if (Path::has_suffix (filename, ".trx"))
             reader.reset (new DWI::Tractography::TRXReader<float> (filename, props));
+          else if (Path::has_suffix (filename, ".dcm"))
+            reader.reset (new DWI::Tractography::DICOMTrackReader<float> (filename, props));
           else
             reader.reset (new DWI::Tractography::Reader<float> (filename, props));
 
