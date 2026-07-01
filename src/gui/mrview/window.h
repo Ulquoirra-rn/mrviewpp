@@ -180,6 +180,7 @@ namespace MR
           void drawGL ();
 
         private slots:
+          void new_window_slot ();
           void image_open_slot ();
           void image_import_DICOM_slot ();
           void image_save_slot ();

@@ -14,6 +14,7 @@
  * For more details, see http://www.mrtrix.org/.
  */
 #include <QDebug>
+#include <QProcess>
 #include "app.h"
 #include "timer.h"
 #include "file/config.h"
@@ -316,6 +317,12 @@ namespace MR
           // File menu:
           menu = new QMenu (tr ("File menu"), this);
 
+          action = menu->addAction (tr ("New window"), this, SLOT (new_window_slot()));
+          action->setShortcut (tr ("Ctrl+N"));
+          addAction (action);
+
+          menu->addSeparator();
+
           action = menu->addAction (tr ("Open..."), this, SLOT (image_open_slot()));
           action->setShortcut (tr ("Ctrl+O"));
           addAction (action);
@@ -349,6 +356,16 @@ namespace MR
           button->setPopupMode (QToolButton::InstantPopup);
           button->setMenu (menu);
           toolbar->addWidget (button);
+
+#ifdef MRTRIX_MACOSX
+          // Dock right-click menu: offer opening another window.
+          {
+            QMenu* dock_menu = new QMenu (this);
+            QAction* dock_new = dock_menu->addAction (tr ("New Window"));
+            connect (dock_new, SIGNAL (triggered()), this, SLOT (new_window_slot()));
+            dock_menu->setAsDockMenu();
+          }
+#endif
 
 
           // Image menu:
@@ -838,6 +855,15 @@ namespace MR
       {
         emit syncChanged();
       }
+
+
+      void Window::new_window_slot ()
+      {
+        // mrview uses separate processes for multiple windows; launch a fresh one.
+        if (!QProcess::startDetached (qApp->applicationFilePath(), QStringList()))
+          QMessageBox::warning (this, "New window", "Failed to open a new mrview++ window.");
+      }
+
 
 
       void Window::image_open_slot ()
