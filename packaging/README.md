@@ -40,6 +40,16 @@ then run Inno Setup:
 iscc packaging\windows\mrviewpp.iss   # -> Output\mrview++-setup.exe
 ```
 
+## Building the Linux AppImage from macOS via Docker
+`make_linux_appimage_docker.sh` builds inside an amd64 `ubuntu:22.04` container.
+On **Intel Macs / native x86_64 Docker hosts** this produces the AppImage
+end-to-end. On **Apple Silicon** it successfully **compiles the Linux binary**
+(under emulation), but the AppImage packaging tools (`linuxdeploy`,
+`appimagetool`) are static-PIE AppImages that the amd64 emulation layer refuses
+to `exec` ("Exec format error"), so the final `.AppImage` cannot be assembled
+locally there. Use the CI workflow (native x86_64 runner) to get the AppImage
+on Apple Silicon.
+
 ## CI
 `.github/workflows/installers.yml` runs the three recipes on
 `macos-latest`, `ubuntu-latest` and `windows-latest` and uploads the `.dmg`,

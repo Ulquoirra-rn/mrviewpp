@@ -16,6 +16,7 @@
 
 #include <cstring>
 
+#include "mrtrix.h"
 #include "exception.h"
 #include "file/dicom/dicom_decode.h"
 
@@ -96,15 +97,24 @@ namespace MR
             ++y;
           }
         } else {
-          // 9-16 bit samples: libjpeg-turbo returns 16-bit scanlines.
+          // 9-16 bit samples need libjpeg-turbo's 16-bit scanline API, which
+          // only exists in libjpeg-turbo >= 3.0. On older libjpeg builds these
+          // (rarer) high-bit-depth JPEGs aren't decodable here - JPEG 2000
+          // covers the same 16-bit lossless case.
+#if defined(LIBJPEG_TURBO_VERSION_NUMBER) && (LIBJPEG_TURBO_VERSION_NUMBER >= 3000000)
           vector<J16SAMPLE> row (per_row);
-          J16SAMPROW rp = row.data();
+          J16SAMPROW rp16 = row.data();
           while (cinfo.output_scanline < h) {
-            jpeg16_read_scanlines (&cinfo, &rp, 1);
+            jpeg16_read_scanlines (&cinfo, &rp16, 1);
             for (size_t i = 0; i != per_row; ++i)
               put_le (out, (y * per_row + i) * bytes, uint32_t (row[i]), bytes);
             ++y;
           }
+#else
+          jpeg_destroy_decompress (&cinfo);
+          throw Exception ("this build's libjpeg cannot decode " + str(prec)
+              + "-bit JPEG DICOM (needs libjpeg-turbo >= 3.0)");
+#endif
         }
 
         jpeg_finish_decompress (&cinfo);
