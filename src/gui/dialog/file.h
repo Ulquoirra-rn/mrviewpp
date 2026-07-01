@@ -32,6 +32,11 @@ namespace MR
         extern const std::string image_filter_string;
         void check_overwrite_files_func (const std::string& name);
 
+        // For tools that can save several selected items at once: ask whether to
+        // combine them into a single file or write one file each into a folder.
+        enum class MultiSaveMode { Cancel, SingleFile, Folder };
+        MultiSaveMode ask_multi_save_mode (QWidget* parent, const std::string& what);
+
         std::string get_folder (QWidget* parent, const std::string& caption, std::string* folder = nullptr);
         std::string get_file (QWidget* parent, const std::string& caption, const std::string& filter = std::string(), std::string* folder = nullptr);
         vector<std::string> get_files (QWidget* parent, const std::string& caption, const std::string& filter = std::string(), std::string* folder = nullptr);

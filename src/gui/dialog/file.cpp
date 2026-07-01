@@ -21,11 +21,8 @@
 #include "gui/dialog/file.h"
 #include "formats/list.h"
 
-#ifdef MRTRIX_MACOSX
-# define FILE_DIALOG_OPTIONS QFileDialog::DontUseNativeDialog
-#else
-# define FILE_DIALOG_OPTIONS QFileDialog::Options()
-#endif
+// Use the operating system's native file picker on all platforms.
+#define FILE_DIALOG_OPTIONS QFileDialog::Options()
 
 namespace MR
 {
@@ -38,6 +35,24 @@ namespace MR
 
         const std::string image_filter_string = "Medical Images (*" + join (MR::Formats::known_extensions, " *") + ")";
 
+
+
+
+        MultiSaveMode ask_multi_save_mode (QWidget* parent, const std::string& what)
+        {
+          QMessageBox box (parent);
+          box.setWindowTitle (qstr ("Save " + what));
+          box.setText (qstr ("Saving " + what + "."));
+          box.setInformativeText ("Save as a single combined file, or as individual files in a folder?");
+          QPushButton* single = box.addButton ("Single combined file", QMessageBox::AcceptRole);
+          QPushButton* folder = box.addButton ("Individual files in a folder", QMessageBox::AcceptRole);
+          box.addButton (QMessageBox::Cancel);
+          box.setDefaultButton (single);
+          box.exec();
+          if (box.clickedButton() == single) return MultiSaveMode::SingleFile;
+          if (box.clickedButton() == folder) return MultiSaveMode::Folder;
+          return MultiSaveMode::Cancel;
+        }
 
 
 

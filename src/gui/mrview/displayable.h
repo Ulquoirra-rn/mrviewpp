@@ -74,6 +74,10 @@ namespace MR
             return filename;
           }
 
+          void set_filename (const std::string& name) {
+            filename = name;
+          }
+
           float scaling_min () const {
             return display_midpoint - 0.5f * display_range;
           }

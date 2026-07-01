@@ -42,11 +42,22 @@ namespace MR
               if (role == Qt::CheckStateRole) {
                 return items[index.row()] && items[index.row()]->show ? Qt::Checked : Qt::Unchecked;
               }
-              if (role != Qt::DisplayRole && role != Qt::ToolTipRole) return QVariant();
+              if (role != Qt::DisplayRole && role != Qt::ToolTipRole && role != Qt::EditRole) return QVariant();
               return items[index.row()] ? qstr (items[index.row()]->get_filename()) : QString();
             }
 
             bool setData (const QModelIndex& idx, const QVariant& value, int role) override {
+              if (role == Qt::EditRole) {
+                if (idx.isValid() && items[idx.row()]) {
+                  const std::string name = value.toString().toUtf8().constData();
+                  if (name.size()) {
+                    items[idx.row()]->set_filename (name);
+                    emit dataChanged (idx, idx);
+                    return true;
+                  }
+                }
+                return false;
+              }
               if (role == Qt::CheckStateRole) {
                 Qt::KeyboardModifiers keyMod = QApplication::keyboardModifiers ();
                 if (keyMod.testFlag (Qt::ShiftModifier)) {
@@ -117,7 +128,7 @@ namespace MR
             Qt::ItemFlags flags (const QModelIndex& index) const override {
 
               static const auto valid_flags = Qt::ItemIsDragEnabled | Qt::ItemIsEnabled |
-                Qt::ItemIsSelectable | Qt::ItemIsUserCheckable;
+                Qt::ItemIsSelectable | Qt::ItemIsUserCheckable | Qt::ItemIsEditable;
               static const auto invalid_flags = valid_flags | Qt::ItemIsDropEnabled;
 
               if (!index.isValid()) return invalid_flags;
