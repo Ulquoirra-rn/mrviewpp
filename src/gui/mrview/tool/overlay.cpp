@@ -24,6 +24,7 @@
 #include "algo/loop.h"
 #include "file/path.h"
 #include "gui/gui.h"
+#include "gui/mrview/colour_palette.h"
 #include "gui/mrview/gui_image.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/mode/slice.h"
@@ -54,6 +55,7 @@ namespace MR
             Model (QObject* parent) :
               ListModelBase (parent) { }
 
+            size_t colour_counter = 0;
             void add_items (vector<std::unique_ptr<MR::Header>>& list);
 
             Item* get_image (QModelIndex& index) {
@@ -66,10 +68,22 @@ namespace MR
         {
           beginInsertRows (QModelIndex(), items.size(), items.size()+list.size());
           for (size_t i = 0; i < list.size(); ++i) {
+            const std::string base = Path::basename (list[i]->name());
+            // If an overlay with the same name is already loaded, give this one a
+            // distinct solid colour so they can be told apart.
+            bool duplicate = false;
+            for (auto& item : items) {
+              Image* existing = dynamic_cast<Image*> (item.get());
+              if (existing && Path::basename (existing->image.name()) == base) { duplicate = true; break; }
+            }
             Item* overlay = new Item (std::move (*list[i]));
             overlay->set_allowed_features (true, true, false);
             if (!overlay->colourmap)
               overlay->colourmap = 1;
+            if (duplicate) {
+              overlay->colourmap = 7;   // "Colour" solid-colour map
+              overlay->set_colour (distinct_colour (colour_counter++));
+            }
             overlay->alpha = 1.0f;
             overlay->set_use_transparency (true);
             items.push_back (std::unique_ptr<Displayable> (overlay));

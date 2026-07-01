@@ -25,6 +25,7 @@
 #include "dwi/tractography/file_trx.h"
 #include "dwi/tractography/file_trx_write.h"
 #include "gui/mrview/window.h"
+#include "gui/mrview/colour_palette.h"
 #include "gui/mrview/tool/tractography/tractography.h"
 #include "gui/dialog/file.h"
 #include "gui/mrview/tool/list_model_base.h"
@@ -75,6 +76,33 @@ namespace MR
             Model (QObject* parent) :
               ListModelBase (parent) { }
 
+            size_t colour_counter = 0;
+
+            // Give a tractogram a distinct solid colour (so multiple tracts are
+            // easy to tell apart). Users can switch back to directional colouring
+            // from the colour combobox.
+            void apply_solid_colour (Tractogram* t) {
+              t->set_color_type (TrackColourType::Manual);
+              t->set_colour (distinct_colour (colour_counter++));
+            }
+
+            // If the newly-added tractogram shares a basename with an existing
+            // one, give them all distinct solid colours.
+            void recolour_duplicates (Tractogram* added) {
+              const std::string base = Path::basename (added->get_filename());
+              bool duplicate = false;
+              for (auto& item : items) {
+                Tractogram* t = dynamic_cast<Tractogram*> (item.get());
+                if (t && t != added && Path::basename (t->get_filename()) == base) {
+                  duplicate = true;
+                  if (t->get_color_type() == TrackColourType::Direction)
+                    apply_solid_colour (t);
+                }
+              }
+              if (duplicate)
+                apply_solid_colour (added);
+            }
+
             // Insert a fully-loaded tractogram into the list.
             void insert_tractogram (Tractogram* tractogram) {
               beginInsertRows (QModelIndex(), items.size(), items.size() + 1);
@@ -103,6 +131,8 @@ namespace MR
                                                                  base + " : " + g.first, filter);
                         try {
                           tractogram->load_tracks();
+                          // Each group gets its own distinct solid colour.
+                          apply_solid_colour (tractogram);
                           insert_tractogram (tractogram);
                         } catch (Exception& e) {
                           delete tractogram;
@@ -139,6 +169,7 @@ namespace MR
                     }
                   }
                   insert_tractogram (tractogram);
+                  recolour_duplicates (tractogram);
                 } catch (Exception& e) {
                   delete tractogram;
                   e.display();
