@@ -7,10 +7,17 @@ name: installers
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Which installer(s) to build"
+        type: choice
+        default: all
+        options: [all, macos, linux, windows]
 
 jobs:
   # ---------------------------------------------------------------- macOS ----
   macos:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +56,7 @@ jobs:
 
   # ---------------------------------------------------------------- Ubuntu ---
   linux:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +78,7 @@ jobs:
 
   # --------------------------------------------------------------- Windows ---
   windows:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
     runs-on: windows-latest
     defaults:
       run: { shell: 'msys2 {0}' }
@@ -87,7 +96,14 @@ jobs:
             mingw-w64-x86_64-openjpeg2 python
       - name: Build
         run: |
+          echo "PATH=$PATH"
+          echo "qmake: $(command -v qmake) ; moc: $(command -v moc) ; rcc: $(command -v rcc)"
+          ls /mingw64/bin/qmake* /mingw64/bin/moc* 2>/dev/null || true
+          qmake -v || true
           export EIGEN_CFLAGS="-I/mingw64/include/eigen3"
+          export QMAKE="$(command -v qmake || echo /mingw64/bin/qmake)"
+          export MOC="$(command -v moc || echo /mingw64/bin/moc)"
+          export RCC="$(command -v rcc || echo /mingw64/bin/rcc)"
           ./configure
           ./build bin/mrview
       - name: Stage self-contained dist
