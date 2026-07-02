@@ -129,6 +129,6 @@ jobs:
           magick convert icons/mrview++.png -define icon:auto-resize=256,128,64,48,32,16 packaging/windows/mrviewpp.ico || copy icons\mrview++.png packaging\windows\mrviewpp.ico
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows\mrviewpp.iss
       - uses: actions/upload-artifact@v4
-        with: { name: mrview++-windows-setup, path: "Output/*.exe" }
+        with: { name: mrview++-windows-setup, path: "packaging/windows/Output/*.exe" }
 
 # (re-index)
