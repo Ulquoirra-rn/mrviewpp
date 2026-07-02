@@ -107,13 +107,17 @@ jobs:
         run: |
           mkdir -p dist
           cp bin/mrview.exe dist/mrview++.exe
-          cp lib/libmrtrix.dll dist/ 2>/dev/null || cp bin/libmrtrix.dll dist/ 2>/dev/null || true
-          windeployqt --release --no-translations dist/mrview++.exe
+          cp -u lib/libmrtrix.dll dist/ 2>/dev/null || cp -u bin/libmrtrix.dll dist/ 2>/dev/null || true
+          # windeployqt is named windeployqt-qt5 on MSYS2
+          WDQ="$(command -v windeployqt-qt5 || command -v windeployqt)"
+          echo "using windeployqt: $WDQ"
+          "$WDQ" --release --no-translations dist/mrview++.exe
           # copy every non-Windows-system DLL the exe needs (mingw runtime,
           # libmrtrix, image codecs) that windeployqt didn't already place.
-          for dll in $(ldd dist/mrview++.exe | awk '{print $3}' | grep -iE '/(mingw64|build)/' ); do
-            cp -u "$dll" dist/ 2>/dev/null || true
+          for dll in $(ldd dist/mrview++.exe | awk '{print $3}' | grep -viE '^/c/windows'); do
+            [ -f "$dll" ] && cp -u "$dll" dist/ 2>/dev/null || true
           done
+          echo "=== dist contents ==="; ls dist
       - name: Portable zip (unzip-and-run)
         uses: actions/upload-artifact@v4
         with: { name: mrview++-windows-portable, path: "dist" }
