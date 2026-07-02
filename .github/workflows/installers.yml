@@ -111,7 +111,7 @@ jobs:
           # windeployqt is named windeployqt-qt5 on MSYS2
           WDQ="$(command -v windeployqt-qt5 || command -v windeployqt)"
           echo "using windeployqt: $WDQ"
-          "$WDQ" --release --no-translations dist/mrview++.exe
+          "$WDQ" --release --no-translations --no-angle --no-opengl-sw dist/mrview++.exe
           # copy every non-Windows-system DLL the exe needs (mingw runtime,
           # libmrtrix, image codecs) that windeployqt didn't already place.
           for dll in $(ldd dist/mrview++.exe | awk '{print $3}' | grep -viE '^/c/windows'); do
