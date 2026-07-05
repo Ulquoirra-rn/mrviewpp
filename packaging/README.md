@@ -14,8 +14,8 @@ current OS:
 | Platform | Output | Notes |
 |----------|--------|-------|
 | macOS    | `mrview++.dmg` (drag to Applications) | self-contained (bundles Qt + codecs) |
-| Ubuntu/Linux | `mrview++_<version>_<arch>.deb` | `sudo apt install ./mrview++_*.deb` (pulls Qt from apt) |
-| Windows  | `packaging/windows/Output/mrview++-setup.exe` | MSYS2 MinGW64 + Inno Setup |
+| Ubuntu/Linux | `mrview++_<version>_<arch>.deb` | self-contained; `sudo apt install ./mrview++_*.deb` |
+| Windows  | `packaging/windows/Output/mrview++-setup.exe` | self-contained (windeployqt); MSYS2 MinGW64 + Inno Setup |
 
 Each installer must be built with the **native** toolchain (Qt + OpenGL + the
 MRtrix3 build system), so it cannot be cross-built from a single machine — run
@@ -31,9 +31,11 @@ The per-platform scripts can also be run directly:
 | Linux (AppImage) | `packaging/linux/make_appimage.sh` | `mrview++-x86_64.AppImage` |
 | Windows  | `iscc packaging/windows/mrviewpp.iss` | `Output/mrview++-setup.exe` |
 
-The macOS `.dmg` and Linux AppImage bundle Qt and every image/codec dependency
-(tiff, png, jpeg, openjpeg). The `.deb` instead declares them as apt
-dependencies, so it stays small and integrates with the package manager.
+Every installer is **self-contained**: Qt and all image/codec dependencies
+(tiff, png, jpeg, openjpeg) are bundled, so the target machine needs nothing
+pre-installed — no MRtrix and no Qt. The macOS `.dmg`, Linux `.deb`, Linux
+AppImage and Windows `.exe` all ship their own Qt. (The `.deb` relies only on
+the universal desktop libraries every Linux ships — glibc, libGL, core X11.)
 
 ## macOS  (verified)
 ```
@@ -50,7 +52,7 @@ sudo apt-get install -y g++ python3 zlib1g-dev libeigen3-dev \
     dpkg-dev wget file
 ./configure
 ./build bin/mrview
-packaging/linux/make_deb.sh        # -> mrview++_<version>_<arch>.deb  (apt-installable)
+packaging/linux/make_deb.sh        # -> mrview++_<version>_<arch>.deb  (self-contained)
 packaging/linux/make_appimage.sh   # -> mrview++-x86_64.AppImage       (single portable file)
 ```
 
