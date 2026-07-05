@@ -1,19 +1,39 @@
 # mrview++ installers
 
-Out-of-the-box installers for the three platforms. Because each installer must
-be built with the **native** toolchain (Qt + OpenGL + the MRtrix3 build system),
-they cannot be cross-built from a single machine — build each on its own OS, or
-let the GitHub Actions workflow (`.github/workflows/installers.yml`) build all
-three and upload them as artifacts.
+## One command (auto-detects your OS)
 
-| Platform | Output | How |
-|----------|--------|-----|
-| macOS    | `mrview++.dmg` (drag to Applications) | `./make_macos_dmg.sh` |
-| Ubuntu/Linux | `mrview++-x86_64.AppImage` | `packaging/linux/make_appimage.sh` |
-| Windows  | `mrview++-setup.exe` | build `dist\`, then `iscc packaging/windows/mrviewpp.iss` |
+From the repo root, on the machine you want to build for:
 
-All three bundle Qt and every image/codec dependency (tiff, png, jpeg,
-openjpeg), so the end user needs nothing pre-installed.
+```
+./make_installer.sh
+```
+
+It builds `bin/mrview` if needed, then produces the native installer for the
+current OS:
+
+| Platform | Output | Notes |
+|----------|--------|-------|
+| macOS    | `mrview++.dmg` (drag to Applications) | self-contained (bundles Qt + codecs) |
+| Ubuntu/Linux | `mrview++_<version>_<arch>.deb` | `sudo apt install ./mrview++_*.deb` (pulls Qt from apt) |
+| Windows  | `packaging/windows/Output/mrview++-setup.exe` | MSYS2 MinGW64 + Inno Setup |
+
+Each installer must be built with the **native** toolchain (Qt + OpenGL + the
+MRtrix3 build system), so it cannot be cross-built from a single machine — run
+`./make_installer.sh` on each OS, or let the GitHub Actions workflow
+(`.github/workflows/installers.yml`) build them.
+
+The per-platform scripts can also be run directly:
+
+| Platform | Script | Output |
+|----------|--------|--------|
+| macOS    | `./make_macos_dmg.sh` | `mrview++.dmg` |
+| Linux (.deb) | `packaging/linux/make_deb.sh` | `mrview++_<version>_<arch>.deb` |
+| Linux (AppImage) | `packaging/linux/make_appimage.sh` | `mrview++-x86_64.AppImage` |
+| Windows  | `iscc packaging/windows/mrviewpp.iss` | `Output/mrview++-setup.exe` |
+
+The macOS `.dmg` and Linux AppImage bundle Qt and every image/codec dependency
+(tiff, png, jpeg, openjpeg). The `.deb` instead declares them as apt
+dependencies, so it stays small and integrates with the package manager.
 
 ## macOS  (verified)
 ```
@@ -26,10 +46,12 @@ openjpeg), so the end user needs nothing pre-installed.
 ```
 sudo apt-get install -y g++ python3 zlib1g-dev libeigen3-dev \
     qtbase5-dev libqt5opengl5-dev libqt5svg5-dev \
-    libtiff-dev libpng-dev libjpeg-dev libopenjp2-7-dev libgl1-mesa-dev wget file
+    libtiff-dev libpng-dev libjpeg-dev libopenjp2-7-dev libgl1-mesa-dev \
+    dpkg-dev wget file
 ./configure
 ./build bin/mrview
-packaging/linux/make_appimage.sh   # -> mrview++-x86_64.AppImage
+packaging/linux/make_deb.sh        # -> mrview++_<version>_<arch>.deb  (apt-installable)
+packaging/linux/make_appimage.sh   # -> mrview++-x86_64.AppImage       (single portable file)
 ```
 
 ## Windows

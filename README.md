@@ -1,3 +1,26 @@
+# mrview++
+
+**mrview++** is a native cross-platform fork of MRtrix3's `mrview` image viewer.
+
+## Install / build the viewer
+
+Prebuilt installers are attached to each [GitHub Release](https://github.com/Ulquoirra-rn/mrviewpp/releases):
+a `.dmg` (macOS), a `.deb` (Ubuntu/Linux), and an `.exe` setup (Windows).
+
+To build the installer yourself, run this from the repo root on the target OS:
+
+```
+./make_installer.sh
+```
+
+It auto-detects the OS and produces the native package — `mrview++.dmg` on
+macOS, `mrview++_<version>_<arch>.deb` on Linux, or
+`packaging/windows/Output/mrview++-setup.exe` on Windows. See
+[`packaging/README.md`](packaging/README.md) for the per-platform scripts and
+build dependencies.
+
+---
+
 # MRtrix
 
 [![Build Status](https://github.com/MRtrix3/mrtrix3/workflows/checks/badge.svg)](https://github.com/MRtrix3/mrtrix3/actions)
