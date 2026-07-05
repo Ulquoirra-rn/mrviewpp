@@ -31,17 +31,6 @@ namespace MR
       namespace Tool
       {
 
-        // Maps a session JSON key to the menu name of the tool that owns it.
-        // The tool name must match the Action text declared in tool/list.h.
-        static const std::vector<std::pair<std::string, std::string>> session_key_to_tool = {
-          { "overlays", "Overlay" },
-          { "tracts",   "Tractography" },
-          { "meshes",   "Mesh display" },
-          { "atlases",  "Atlas" }
-        };
-
-
-
         Session::Session (Dock* parent) :
             Base (parent)
         {
@@ -61,6 +50,11 @@ namespace MR
           open_button->setToolTip (tr ("Restore a previously saved session"));
           connect (open_button, SIGNAL (clicked()), this, SLOT (open_slot ()));
           box_layout->addWidget (open_button);
+
+          QPushButton* restore_button = new QPushButton (tr ("Restore auto-saved session"), this);
+          restore_button->setToolTip (tr ("Reload the session that is automatically saved to your home directory"));
+          connect (restore_button, SIGNAL (clicked()), this, SLOT (restore_autosave_slot ()));
+          box_layout->addWidget (restore_button);
 
           status_label = new QLabel (tr ("No session loaded."));
           status_label->setWordWrap (true);
@@ -96,32 +90,10 @@ namespace MR
           if (path.empty())
             return;
 
-          try {
-            nlohmann::json j;
-            j["main"] = main_image_filenames();
-
-            QList<QAction*> actions = window().tools()->actions();
-            for (int i = 0; i < actions.size(); ++i) {
-              __Action__* tool_action = dynamic_cast<__Action__*> (actions[i]);
-              if (!tool_action || !tool_action->dock || !tool_action->dock->tool)
-                continue;
-              const std::string key = tool_action->dock->tool->session_key();
-              if (key.empty())
-                continue;
-              nlohmann::json node;
-              tool_action->dock->tool->get_session (node);
-              j[key] = node;
-            }
-
-            std::ofstream out (path);
-            if (!out)
-              throw Exception ("unable to open session file \"" + path + "\" for writing");
-            out << j.dump (2) << "\n";
+          if (window().save_session (path))
             status_label->setText (qstr ("Saved session to " + path));
-          } catch (Exception& e) {
-            e.display();
+          else
             status_label->setText ("Failed to save session.");
-          }
         }
 
 
@@ -132,30 +104,25 @@ namespace MR
           if (path.empty())
             return;
 
-          try {
-            std::ifstream in (path);
-            if (!in)
-              throw Exception ("unable to open session file \"" + path + "\"");
-            nlohmann::json j;
-            in >> j;
-
-            if (j.find ("main") != j.end() && j["main"].is_array())
-              load_main_images (j["main"].get<vector<std::string>>());
-
-            for (const auto& kv : session_key_to_tool) {
-              if (j.find (kv.first) == j.end())
-                continue;
-              Dock* dock = ensure_tool_open (kv.second);
-              if (dock && dock->tool)
-                dock->tool->set_session (j[kv.first]);
-            }
-
-            window().updateGL();
+          if (window().load_session (path))
             status_label->setText (qstr ("Loaded session from " + path));
-          } catch (Exception& e) {
-            e.display();
+          else
             status_label->setText ("Failed to load session.");
+        }
+
+
+
+        void Session::restore_autosave_slot ()
+        {
+          const std::string path = Window::autosave_session_path();
+          if (path.empty() || !Path::is_file (path)) {
+            status_label->setText ("No auto-saved session found.");
+            return;
           }
+          if (window().load_session (path))
+            status_label->setText (qstr ("Restored auto-saved session from " + path));
+          else
+            status_label->setText ("Failed to restore auto-saved session.");
         }
 
 

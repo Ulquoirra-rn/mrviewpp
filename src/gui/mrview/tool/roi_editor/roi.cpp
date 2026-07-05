@@ -18,6 +18,9 @@
 #include <limits>
 #include <algorithm>
 
+#include <QProgressBar>
+#include <QTimer>
+
 #include "gui/mrview/tool/roi_editor/roi.h"
 
 #include "header.h"
@@ -108,14 +111,14 @@ namespace MR
 
           main_box->addWidget (list_view, 1);
 
-          QPushButton* grow_cut_button = new QPushButton (tr ("Grow-cut from ROIs"), this);
+          grow_cut_button = new QPushButton (tr ("Grow-cut from ROIs"), this);
           grow_cut_button->setToolTip (tr ("Use the painted ROIs as seeds (one region per ROI) and grow-cut "
                                            "segment the current image; results are added as new ROIs"));
           connect (grow_cut_button, SIGNAL (clicked()), this, SLOT (grow_cut_slot ()));
           main_box->addWidget (grow_cut_button, 0);
 
           HBoxLayout* region_grow_layout = new HBoxLayout;
-          QPushButton* region_grow_button = new QPushButton (tr ("Region grow (3D)"), this);
+          region_grow_button = new QPushButton (tr ("Region grow (3D)"), this);
           region_grow_button->setToolTip (tr ("Grow the selected ROI seed in 3D to all connected voxels whose "
                                               "intensity is within the tolerance of the seed's mean intensity"));
           connect (region_grow_button, SIGNAL (clicked()), this, SLOT (region_grow_slot ()));
@@ -309,6 +312,20 @@ namespace MR
           checkall_layout->addWidget (uncheck_all_button, 1);
           main_box->addLayout (checkall_layout, 0);
 
+          // Bottom-right progress + completion notice for background segmentation.
+          HBoxLayout* seg_layout = new HBoxLayout;
+          seg_layout->addStretch (1);
+          seg_status = new QLabel (this);
+          seg_layout->addWidget (seg_status, 0);
+          seg_progress = new QProgressBar (this);
+          seg_progress->setRange (0, 0);          // indeterminate/busy indicator
+          seg_progress->setMaximumWidth (120);
+          seg_progress->setTextVisible (false);
+          seg_layout->addWidget (seg_progress, 0);
+          seg_status->hide();
+          seg_progress->hide();
+          main_box->addLayout (seg_layout, 0);
+
           update_selection();
         }
 
@@ -319,6 +336,11 @@ namespace MR
 
         ROI::~ROI()
         {
+          // Stop any in-flight background segmentation before tearing down.
+          seg_cancel = true;
+          if (seg_thread.joinable())
+            seg_thread.join();
+
           for (int i = 0; i != list_model->rowCount(); ++i) {
             QModelIndex index = list_model->index (i, 0);
             ROI_Item* roi = list_model->get (index);
@@ -329,6 +351,35 @@ namespace MR
                 save (roi);
             }
           }
+        }
+
+
+
+
+        // --- background-segmentation UI helpers (all on the GUI thread) ---
+
+        void ROI::set_seg_controls_enabled (bool on)
+        {
+          grow_cut_button->setEnabled (on);
+          region_grow_button->setEnabled (on);
+        }
+
+        void ROI::seg_show_progress (const QString& msg)
+        {
+          seg_status->setText (msg);
+          seg_status->show();
+          seg_progress->show();
+          set_seg_controls_enabled (false);
+        }
+
+        void ROI::seg_finish (const QString& msg)
+        {
+          seg_progress->hide();
+          seg_status->setText (msg);
+          seg_status->show();
+          set_seg_controls_enabled (true);
+          // Auto-clear the completion notice after a few seconds.
+          QTimer::singleShot (4000, this, [this] () { seg_status->clear(); seg_status->hide(); });
         }
 
 
@@ -489,8 +540,14 @@ namespace MR
         // painted ROIs: each ROI becomes one seed region, the current image is the
         // intensity, and the grown regions are added back as new ROIs. Same
         // cellular-automaton as the mrgrowcut command.
+        //
+        // The heavy automaton runs on a background thread so the viewer stays
+        // responsive; the GL seed reads happen here (GUI thread) and the GL uploads
+        // of the results happen in the finalize step (also GUI thread).
         void ROI::grow_cut_slot ()
         {
+          if (seg_running)
+            return;
           if (!window().image()) {
             QMessageBox::warning (this, "Grow-cut", "Load an image first to use as the intensity for grow-cut.");
             return;
@@ -513,28 +570,10 @@ namespace MR
           MR::Image<cfloat> in (window().image()->image);
           const ssize_t nx = in.size(0), ny = in.size(1), nz = in.size(2);
           const size_t N = size_t(nx) * ny * nz;
-          auto idx = [&] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
+          auto idx = [nx, ny] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
 
-          // Read intensities (first volume) into a flat buffer + find the range.
-          vector<float> intensity (N);
-          float vmin = std::numeric_limits<float>::infinity();
-          float vmax = -std::numeric_limits<float>::infinity();
-          if (in.ndim() > 3) in.index(3) = 0;
-          for (ssize_t z = 0; z != nz; ++z) { in.index(2) = z;
-            for (ssize_t y = 0; y != ny; ++y) { in.index(1) = y;
-              for (ssize_t x = 0; x != nx; ++x) { in.index(0) = x;
-                const cfloat cv = in.value();
-                const float v = cv.real();
-                intensity[idx(x,y,z)] = v;
-                if (std::isfinite (v)) { vmin = std::min (vmin, v); vmax = std::max (vmax, v); }
-              }
-            }
-          }
-          const float range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
-
-          // Read each ROI texture and assign its label to painted voxels.
-          vector<uint32_t> label (N, 0);
-          vector<float> strength (N, 0.0f);
+          // Read each ROI texture (GL, GUI thread) and assign its label to painted voxels.
+          auto label = std::make_shared<vector<uint32_t>> (N, 0);
           size_t mismatched = 0;
           {
             GL::Context::Grab context;
@@ -550,30 +589,60 @@ namespace MR
               gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
               gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&data[0]));
               const uint32_t lab = uint32_t (s + 1);
-              for (size_t i = 0; i < N; ++i) {
-                if (data[i]) { label[i] = lab; strength[i] = 1.0f; }
-              }
+              for (size_t i = 0; i < N; ++i)
+                if (data[i]) (*label)[i] = lab;
             }
           }
           if (mismatched)
             WARN (str(mismatched) + " ROI(s) skipped for grow-cut (dimensions do not match the current image)");
 
-          // 6-connected synchronous cellular automaton.
-          const int dx[6] = { 1, -1, 0, 0, 0, 0 };
-          const int dy[6] = { 0, 0, 1, -1, 0, 0 };
-          const int dz[6] = { 0, 0, 0, 0, 1, -1 };
-          vector<uint32_t> next_label (label);
-          vector<float> next_strength (strength);
-          {
-            ProgressBar progress ("performing grow-cut segmentation");
+          const size_t n_regions = seeds.size();
+          auto in_ptr = std::make_shared<MR::Image<cfloat>> (in);
+          auto header = std::make_shared<MR::Header> (window().image()->header());
+
+          seg_cancel = false;
+          seg_running = true;
+          seg_show_progress ("Grow-cut…");
+
+          if (seg_thread.joinable())
+            seg_thread.join();
+          seg_thread = std::thread ([this, in_ptr, label, header, nx, ny, nz, N, n_regions, idx] () {
+            // === pure CPU compute: no GL, no Qt GUI ===
+            MR::Image<cfloat>& img = *in_ptr;
+            vector<float> intensity (N);
+            float vmin = std::numeric_limits<float>::infinity();
+            float vmax = -std::numeric_limits<float>::infinity();
+            if (img.ndim() > 3) img.index(3) = 0;
+            for (ssize_t z = 0; z != nz; ++z) { img.index(2) = z;
+              for (ssize_t y = 0; y != ny; ++y) { img.index(1) = y;
+                for (ssize_t x = 0; x != nx; ++x) { img.index(0) = x;
+                  const cfloat cv = img.value();
+                  const float v = cv.real();
+                  intensity[idx(x,y,z)] = v;
+                  if (std::isfinite (v)) { vmin = std::min (vmin, v); vmax = std::max (vmax, v); }
+                }
+              }
+            }
+            const float range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
+
+            vector<uint32_t>& lab_vol = *label;
+            vector<float> strength (N, 0.0f);
+            for (size_t i = 0; i < N; ++i)
+              if (lab_vol[i]) strength[i] = 1.0f;
+
+            const int dx[6] = { 1, -1, 0, 0, 0, 0 };
+            const int dy[6] = { 0, 0, 1, -1, 0, 0 };
+            const int dz[6] = { 0, 0, 0, 0, 1, -1 };
+            vector<uint32_t> next_label (lab_vol);
+            vector<float> next_strength (strength);
             bool changed = true;
-            for (int iter = 0; iter != 1000 && changed; ++iter) {
+            for (int iter = 0; iter != 1000 && changed && !seg_cancel; ++iter) {
               changed = false;
               for (ssize_t z = 0; z != nz; ++z) {
                 for (ssize_t y = 0; y != ny; ++y) {
                   for (ssize_t x = 0; x != nx; ++x) {
                     const size_t p = idx(x,y,z);
-                    uint32_t best_label = label[p];
+                    uint32_t best_label = lab_vol[p];
                     float best_strength = strength[p];
                     const float cp = intensity[p];
                     for (int n = 0; n != 6; ++n) {
@@ -587,54 +656,54 @@ namespace MR
                       const float attack = g * strength[q];
                       if (attack > best_strength) {
                         best_strength = attack;
-                        best_label = label[q];
+                        best_label = lab_vol[q];
                       }
                     }
                     next_label[p] = best_label;
                     next_strength[p] = best_strength;
-                    if (best_label != label[p])
+                    if (best_label != lab_vol[p])
                       changed = true;
                   }
                 }
               }
-              label.swap (next_label);
+              lab_vol.swap (next_label);
               strength.swap (next_strength);
-              ++progress;
             }
-          }
 
-          // Add one new ROI per seed region, holding that region's grown mask.
-          // (Appended after the seed ROIs, which are removed further below.)
-          const size_t n_seeds = seeds.size();
-          const size_t n_regions = seeds.size();
-          for (size_t s = 0; s < n_regions; ++s) {
-            const uint32_t lab = uint32_t (s + 1);
-            MR::Header H (window().image()->header());
-            list_model->create (std::move (H));
-            ROI_Item* out = dynamic_cast<ROI_Item*> (list_model->items.back().get());
-            if (!out)
-              continue;
-            GL::Context::Grab context;
-            GL::assert_context_is_current();
-            out->bind();
-            gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
-            vector<GLubyte> slice (size_t(nx) * ny);
-            for (ssize_t z = 0; z != nz; ++z) {
-              for (ssize_t y = 0; y != ny; ++y)
-                for (ssize_t x = 0; x != nx; ++x)
-                  slice[size_t(x) + nx*y] = (label[idx(x,y,z)] == lab) ? 1 : 0;
-              out->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
-            }
-          }
-
-          // Replace the seeds with the segmentation: remove the original seed
-          // ROIs (the first n_seeds rows; results were appended after them).
-          for (size_t s = 0; s < n_seeds; ++s) {
-            QModelIndex first = list_model->index (0, 0);
-            list_model->remove_item (first);
-          }
-
-          updateGL();
+            const bool cancelled = seg_cancel;
+            // === back to the GUI thread for the GL uploads ===
+            QMetaObject::invokeMethod (this, [this, label, header, nx, ny, nz, n_regions, idx, cancelled] () {
+              if (seg_thread.joinable())
+                seg_thread.join();
+              seg_running = false;
+              if (cancelled || !window().image()) {
+                seg_finish (cancelled ? tr ("Grow-cut cancelled") : tr ("Grow-cut aborted"));
+                return;
+              }
+              vector<uint32_t>& lab_vol = *label;
+              for (size_t s = 0; s < n_regions; ++s) {
+                const uint32_t lab = uint32_t (s + 1);
+                MR::Header H (*header);
+                list_model->create (std::move (H));
+                ROI_Item* out = dynamic_cast<ROI_Item*> (list_model->items.back().get());
+                if (!out)
+                  continue;
+                GL::Context::Grab context;
+                GL::assert_context_is_current();
+                out->bind();
+                gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+                vector<GLubyte> slice (size_t(nx) * ny);
+                for (ssize_t z = 0; z != nz; ++z) {
+                  for (ssize_t y = 0; y != ny; ++y)
+                    for (ssize_t x = 0; x != nx; ++x)
+                      slice[size_t(x) + nx*y] = (lab_vol[idx(x,y,z)] == lab) ? 1 : 0;
+                  out->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
+                }
+              }
+              updateGL();
+              seg_finish (tr ("✓ Segmentation complete"));
+            }, Qt::QueuedConnection);
+          });
         }
 
 
@@ -644,6 +713,8 @@ namespace MR
         // of the seed's mean intensity. The grown region replaces the seed ROI.
         void ROI::region_grow_slot ()
         {
+          if (seg_running)
+            return;
           if (!window().image()) {
             QMessageBox::warning (this, "Region grow", "Load an image first to use as the intensity for region growing.");
             return;
@@ -664,99 +735,125 @@ namespace MR
             return;
           }
           const size_t N = size_t(nx) * ny * nz;
-          auto idx = [&] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
+          auto idx = [nx, ny] (ssize_t x, ssize_t y, ssize_t z) { return size_t(x) + nx * (size_t(y) + ny * z); };
 
-          // Intensities (first volume) + range.
-          vector<float> intensity (N);
-          float vmin = std::numeric_limits<float>::infinity();
-          float vmax = -std::numeric_limits<float>::infinity();
-          if (in.ndim() > 3) in.index(3) = 0;
-          for (ssize_t z = 0; z != nz; ++z) { in.index(2) = z;
-            for (ssize_t y = 0; y != ny; ++y) { in.index(1) = y;
-              for (ssize_t x = 0; x != nx; ++x) { in.index(0) = x;
-                const cfloat cv = in.value();
-                const float v = cv.real();
-                intensity[idx(x,y,z)] = v;
-                if (std::isfinite (v)) { vmin = std::min (vmin, v); vmax = std::max (vmax, v); }
-              }
-            }
-          }
-          const float range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
-
-          // Read the seed mask.
-          vector<GLubyte> seed (N);
+          // Read the seed mask (GL, GUI thread).
+          auto seed = std::make_shared<vector<GLubyte>> (N);
           {
             GL::Context::Grab context;
             GL::assert_context_is_current();
             roi->texture().bind();
             gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
-            gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&seed[0]));
+            gl::GetTexImage (gl::TEXTURE_3D, 0, gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&(*seed)[0]));
           }
-
-          // Mean intensity over the seed voxels.
-          double sum = 0.0; size_t cnt = 0;
-          for (size_t i = 0; i < N; ++i)
-            if (seed[i]) { sum += intensity[i]; ++cnt; }
-          if (!cnt) {
-            QMessageBox::warning (this, "Region grow", "Paint a seed in the selected ROI first.");
-            return;
-          }
-          const float mean = float (sum / double(cnt));
 
           const float pct = std::isfinite (tolerance_button->value()) ? tolerance_button->value() : 10.0f;
-          const float tol = (pct / 100.0f) * range;
+          auto in_ptr = std::make_shared<MR::Image<cfloat>> (in);
+          auto region = std::make_shared<vector<char>> (N, 0);   // filled by the worker
 
-          // 6-connected flood fill from the seed voxels.
-          const int dx[6] = { 1, -1, 0, 0, 0, 0 };
-          const int dy[6] = { 0, 0, 1, -1, 0, 0 };
-          const int dz[6] = { 0, 0, 0, 0, 1, -1 };
-          vector<char> in_region (N, 0);
-          vector<size_t> queue;
-          queue.reserve (cnt);
-          for (size_t i = 0; i < N; ++i)
-            if (seed[i]) { in_region[i] = 1; queue.push_back (i); }
-          for (size_t head = 0; head < queue.size(); ++head) {
-            const size_t p = queue[head];
-            const ssize_t z = ssize_t (p / (size_t(nx) * ny));
-            const ssize_t rem = ssize_t (p % (size_t(nx) * ny));
-            const ssize_t y = rem / nx;
-            const ssize_t x = rem % nx;
-            for (int n = 0; n != 6; ++n) {
-              const ssize_t qx = x+dx[n], qy = y+dy[n], qz = z+dz[n];
-              if (qx < 0 || qy < 0 || qz < 0 || qx >= nx || qy >= ny || qz >= nz)
-                continue;
-              const size_t q = idx (qx, qy, qz);
-              if (!in_region[q] && std::abs (intensity[q] - mean) <= tol) {
-                in_region[q] = 1;
-                queue.push_back (q);
+          seg_cancel = false;
+          seg_running = true;
+          seg_show_progress ("Region grow…");
+
+          if (seg_thread.joinable())
+            seg_thread.join();
+          seg_thread = std::thread ([this, in_ptr, seed, region, roi, nx, ny, nz, N, pct, idx] () {
+            // === pure CPU compute: no GL, no Qt GUI ===
+            MR::Image<cfloat>& img = *in_ptr;
+            vector<float> intensity (N);
+            float vmin = std::numeric_limits<float>::infinity();
+            float vmax = -std::numeric_limits<float>::infinity();
+            if (img.ndim() > 3) img.index(3) = 0;
+            for (ssize_t z = 0; z != nz; ++z) { img.index(2) = z;
+              for (ssize_t y = 0; y != ny; ++y) { img.index(1) = y;
+                for (ssize_t x = 0; x != nx; ++x) { img.index(0) = x;
+                  const cfloat cv = img.value();
+                  const float v = cv.real();
+                  intensity[idx(x,y,z)] = v;
+                  if (std::isfinite (v)) { vmin = std::min (vmin, v); vmax = std::max (vmax, v); }
+                }
               }
             }
-          }
+            const float range = (vmax > vmin) ? (vmax - vmin) : 1.0f;
 
-          // Whole-volume undo entry: capture the ROI before the 3D edit so undo
-          // restores the entire grown region (not just the seed's slice).
-          ROI_UndoEntry undo_entry (*roi);
+            double sum = 0.0; size_t cnt = 0;
+            for (size_t i = 0; i < N; ++i)
+              if ((*seed)[i]) { sum += intensity[i]; ++cnt; }
+            const float mean = cnt ? float (sum / double(cnt)) : 0.0f;
+            const float tol = (pct / 100.0f) * range;
 
-          // Write the grown region back into the seed ROI.
-          {
-            GL::Context::Grab context;
-            GL::assert_context_is_current();
-            roi->bind();
-            gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
-            vector<GLubyte> slice (size_t(nx) * ny);
-            for (ssize_t z = 0; z != nz; ++z) {
-              for (ssize_t y = 0; y != ny; ++y)
-                for (ssize_t x = 0; x != nx; ++x)
-                  slice[size_t(x) + nx*y] = in_region[idx(x,y,z)] ? 1 : 0;
-              roi->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
+            const int dx[6] = { 1, -1, 0, 0, 0, 0 };
+            const int dy[6] = { 0, 0, 1, -1, 0, 0 };
+            const int dz[6] = { 0, 0, 0, 0, 1, -1 };
+            vector<char>& in_region = *region;
+            vector<size_t> queue;
+            queue.reserve (cnt);
+            for (size_t i = 0; i < N; ++i)
+              if ((*seed)[i]) { in_region[i] = 1; queue.push_back (i); }
+            for (size_t head = 0; head < queue.size() && !seg_cancel; ++head) {
+              const size_t p = queue[head];
+              const ssize_t z = ssize_t (p / (size_t(nx) * ny));
+              const ssize_t rem = ssize_t (p % (size_t(nx) * ny));
+              const ssize_t y = rem / nx;
+              const ssize_t x = rem % nx;
+              for (int n = 0; n != 6; ++n) {
+                const ssize_t qx = x+dx[n], qy = y+dy[n], qz = z+dz[n];
+                if (qx < 0 || qy < 0 || qz < 0 || qx >= nx || qy >= ny || qz >= nz)
+                  continue;
+                const size_t q = idx (qx, qy, qz);
+                if (!in_region[q] && std::abs (intensity[q] - mean) <= tol) {
+                  in_region[q] = 1;
+                  queue.push_back (q);
+                }
+              }
             }
-          }
-          undo_entry.capture_after (*roi);
-          roi->start (std::move (undo_entry));
-          roi->saved = false;
 
-          update_undo_redo();
-          updateGL();
+            const bool cancelled = seg_cancel || !cnt;
+            // === back to the GUI thread for the GL upload ===
+            QMetaObject::invokeMethod (this, [this, region, roi, nx, ny, nz, idx, cancelled] () {
+              if (seg_thread.joinable())
+                seg_thread.join();
+              seg_running = false;
+              if (cancelled) {
+                seg_finish (tr ("Region grow cancelled"));
+                return;
+              }
+              // The seed ROI may have been removed or the image unloaded while the
+              // worker ran — verify it still exists before writing to it.
+              bool still_present = false;
+              for (size_t i = 0; i < list_model->items.size(); ++i)
+                if (list_model->items[i].get() == roi) { still_present = true; break; }
+              if (!still_present || !window().image()) {
+                seg_finish (tr ("Region grow discarded (ROI removed)"));
+                return;
+              }
+
+              // Whole-volume undo entry: capture the ROI before the 3D edit so undo
+              // restores the entire grown region (not just the seed's slice).
+              ROI_UndoEntry undo_entry (*roi);
+              vector<char>& in_region = *region;
+              {
+                GL::Context::Grab context;
+                GL::assert_context_is_current();
+                roi->bind();
+                gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+                vector<GLubyte> slice (size_t(nx) * ny);
+                for (ssize_t z = 0; z != nz; ++z) {
+                  for (ssize_t y = 0; y != ny; ++y)
+                    for (ssize_t x = 0; x != nx; ++x)
+                      slice[size_t(x) + nx*y] = in_region[idx(x,y,z)] ? 1 : 0;
+                  roi->upload_data ({ { 0, 0, z } }, { { nx, ny, 1 } }, reinterpret_cast<void*> (&slice[0]));
+                }
+              }
+              undo_entry.capture_after (*roi);
+              roi->start (std::move (undo_entry));
+              roi->saved = false;
+
+              update_undo_redo();
+              updateGL();
+              seg_finish (tr ("✓ Segmentation complete"));
+            }, Qt::QueuedConnection);
+          });
         }
 
 
@@ -941,13 +1038,14 @@ namespace MR
             return;
           }
 
-          const Dialog::File::MultiSaveMode mode =
-              Dialog::File::ask_multi_save_mode (this, str(rois.size()) + " ROIs");
-          if (mode == Dialog::File::MultiSaveMode::Cancel)
+          const Dialog::File::MultiSaveChoice choice =
+              Dialog::File::ask_multi_save_mode (this, str(rois.size()) + " ROIs",
+                  { ".nii.gz", ".nii", ".mif", ".mif.gz", ".mih", ".nrrd" });
+          if (choice.mode == Dialog::File::MultiSaveMode::Cancel)
             return;
 
           try {
-            if (mode == Dialog::File::MultiSaveMode::SingleFile) {
+            if (choice.mode == Dialog::File::MultiSaveMode::SingleFile) {
               std::string name = GUI::Dialog::File::get_save_image_name (&window(),
                   "Save ROIs as one label image", "rois_labels.mif", &current_folder);
               if (name.empty())
@@ -963,7 +1061,7 @@ namespace MR
                 std::string stem = Path::basename (r->get_filename());
                 const size_t dot = stem.find_last_of ('.');
                 if (dot != std::string::npos) stem = stem.substr (0, dot);
-                write_roi_mask (r, Path::join (folder, stem + ".mif"));
+                write_roi_mask (r, Path::join (folder, stem + choice.extension));
                 r->saved = true;
               }
             }

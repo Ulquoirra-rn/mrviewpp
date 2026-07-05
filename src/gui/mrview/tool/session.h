@@ -42,6 +42,7 @@ namespace MR
           private slots:
             void save_slot ();
             void open_slot ();
+            void restore_autosave_slot ();
 
           protected:
             QLabel* status_label;

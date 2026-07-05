@@ -636,12 +636,13 @@ namespace MR
               return;
             }
 
-            const Dialog::File::MultiSaveMode mode =
-                Dialog::File::ask_multi_save_mode (this, str(selected.size()) + " tractograms");
-            if (mode == Dialog::File::MultiSaveMode::Cancel)
+            const Dialog::File::MultiSaveChoice choice =
+                Dialog::File::ask_multi_save_mode (this, str(selected.size()) + " tractograms",
+                    { ".tck", ".trk", ".trx" });
+            if (choice.mode == Dialog::File::MultiSaveMode::Cancel)
               return;
 
-            if (mode == Dialog::File::MultiSaveMode::SingleFile) {
+            if (choice.mode == Dialog::File::MultiSaveMode::SingleFile) {
               // A single combined file must be .trx (only format with groups).
               std::string out_path = Dialog::File::get_save_name (this,
                   "Export tractograms as a single .trx", "tractograms.trx", "TRX (*.trx)");
@@ -675,7 +676,7 @@ namespace MR
               for (Tractogram* t : selected) {
                 Tractogram::FilteredTracks ft;
                 t->get_filtered_streamlines (ft);
-                write_filtered_tracks (ft, Path::join (folder, strip_known_suffix (ft.source_name) + "_thresholded.tck"));
+                write_filtered_tracks (ft, Path::join (folder, strip_known_suffix (ft.source_name) + "_thresholded" + choice.extension));
                 total += ft.tracks.size();
               }
               QMessageBox::information (this, "Export tractography",

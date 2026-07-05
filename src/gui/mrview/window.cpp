@@ -15,9 +15,13 @@
  */
 #include <QDebug>
 #include <QProcess>
+#include <QTimer>
+#include <fstream>
 #include "app.h"
 #include "timer.h"
 #include "file/config.h"
+#include "file/path.h"
+#include "file/json.h"
 #include "header.h"
 #include "algo/copy.h"
 #include "gui/opengl/gl.h"
@@ -811,6 +815,16 @@ namespace MR
         }
 
         QTimer::singleShot (10, this, SLOT(process_commandline_option_slot()));
+
+        // Periodically autosave the scene to a hidden file in the home directory,
+        // so an unexpected termination still leaves a recent recoverable session.
+        QTimer* autosave_timer = new QTimer (this);
+        connect (autosave_timer, &QTimer::timeout, this, [this] () {
+          const std::string p = autosave_session_path();
+          if (p.size() && !image_group->actions().isEmpty())
+            save_session (p);
+        });
+        autosave_timer->start (120000);   // every 2 minutes
       }
 
 
@@ -1869,8 +1883,121 @@ namespace MR
 
       void Window::closeEvent (QCloseEvent* event)
       {
+        // Autosave the scene to the hidden home-directory file on exit.
+        const std::string p = autosave_session_path();
+        if (p.size() && !image_group->actions().isEmpty())
+          save_session (p);
+
         qApp->quit();
         event->accept();
+      }
+
+
+
+      std::string Window::autosave_session_path ()
+      {
+        try {
+          return Path::join (Path::home(), ".mrview++-session.json");
+        } catch (...) {
+          return std::string();
+        }
+      }
+
+
+
+      bool Window::save_session (const std::string& path)
+      {
+        try {
+          nlohmann::json j;
+
+          vector<std::string> main_names;
+          QList<QAction*> images = image_group->actions();
+          for (int n = 0; n < images.size(); ++n)
+            main_names.push_back (static_cast<const Image*> (images[n])->header().name());
+          j["main"] = main_names;
+
+          QList<QAction*> actions = tool_group->actions();
+          for (int i = 0; i < actions.size(); ++i) {
+            Tool::__Action__* tool_action = dynamic_cast<Tool::__Action__*> (actions[i]);
+            if (!tool_action || !tool_action->dock || !tool_action->dock->tool)
+              continue;
+            const std::string key = tool_action->dock->tool->session_key();
+            if (key.empty())
+              continue;
+            nlohmann::json node;
+            tool_action->dock->tool->get_session (node);
+            j[key] = node;
+          }
+
+          std::ofstream out (path);
+          if (!out)
+            throw Exception ("unable to open session file \"" + path + "\" for writing");
+          out << j.dump (2) << "\n";
+          return true;
+        } catch (Exception& e) {
+          e.display();
+          return false;
+        }
+      }
+
+
+
+      bool Window::load_session (const std::string& path)
+      {
+        if (!Path::is_file (path))
+          return false;
+        try {
+          std::ifstream in (path);
+          if (!in)
+            throw Exception ("unable to open session file \"" + path + "\"");
+          nlohmann::json j;
+          in >> j;
+
+          if (j.find ("main") != j.end() && j["main"].is_array()) {
+            vector<std::unique_ptr<MR::Header>> headers;
+            for (const auto& p : j["main"].get<vector<std::string>>()) {
+              try {
+                headers.push_back (make_unique<MR::Header> (MR::Header::open (p)));
+              } catch (Exception& e) {
+                e.display();
+              }
+            }
+            if (headers.size())
+              add_images (headers);
+          }
+
+          // Map each session JSON key to the menu name of the owning tool.
+          static const std::vector<std::pair<std::string, std::string>> key_to_tool = {
+            { "overlays", "Overlay" },
+            { "tracts",   "Tractography" },
+            { "meshes",   "Mesh display" },
+            { "atlases",  "Atlas" }
+          };
+          for (const auto& kv : key_to_tool) {
+            if (j.find (kv.first) == j.end())
+              continue;
+            // Ensure the owning tool dock is open, then hand it its session.
+            QList<QAction*> actions = tool_group->actions();
+            for (int i = 0; i < actions.size(); ++i) {
+              if (actions[i]->text().toStdString() != kv.second)
+                continue;
+              Tool::__Action__* tool_action = dynamic_cast<Tool::__Action__*> (actions[i]);
+              if (!tool_action)
+                break;
+              if (!tool_action->dock)
+                actions[i]->trigger();   // opens the dock synchronously
+              if (tool_action->dock && tool_action->dock->tool)
+                tool_action->dock->tool->set_session (j[kv.first]);
+              break;
+            }
+          }
+
+          updateGL();
+          return true;
+        } catch (Exception& e) {
+          e.display();
+          return false;
+        }
       }
 
 

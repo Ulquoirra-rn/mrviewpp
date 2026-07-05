@@ -447,12 +447,13 @@ namespace MR
               return;
             }
 
-            const Dialog::File::MultiSaveMode mode =
-                Dialog::File::ask_multi_save_mode (this, str(overlays.size()) + " overlays");
-            if (mode == Dialog::File::MultiSaveMode::Cancel)
+            const Dialog::File::MultiSaveChoice choice =
+                Dialog::File::ask_multi_save_mode (this, str(overlays.size()) + " overlays",
+                    { ".nii.gz", ".nii", ".mif", ".mif.gz", ".mih", ".nrrd" });
+            if (choice.mode == Dialog::File::MultiSaveMode::Cancel)
               return;
 
-            if (mode == Dialog::File::MultiSaveMode::SingleFile) {
+            if (choice.mode == Dialog::File::MultiSaveMode::SingleFile) {
               const std::string suggested = "overlays_4d.nii.gz";
               const std::string fname = Dialog::File::get_save_image_name (this, "Export overlays as 4D image", suggested);
               if (fname.empty()) return;
@@ -464,7 +465,7 @@ namespace MR
               std::string folder = Dialog::File::get_folder (this, "Select folder for exported overlays");
               if (folder.empty()) return;
               for (Item* o : overlays)
-                write_thresholded_overlay (o, Path::join (folder, overlay_stem (o->image.name()) + "_thresholded.nii.gz"));
+                write_thresholded_overlay (o, Path::join (folder, overlay_stem (o->image.name()) + "_thresholded" + choice.extension));
               QMessageBox::information (this, "Export overlays",
                   qstr (str(overlays.size()) + " overlays exported to:\n" + folder));
             }

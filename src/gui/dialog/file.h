@@ -35,7 +35,19 @@ namespace MR
         // For tools that can save several selected items at once: ask whether to
         // combine them into a single file or write one file each into a folder.
         enum class MultiSaveMode { Cancel, SingleFile, Folder };
-        MultiSaveMode ask_multi_save_mode (QWidget* parent, const std::string& what);
+
+        // Result of ask_multi_save_mode: the chosen mode plus, for the Folder
+        // branch, the file extension picked from the format drop-down (e.g.
+        // ".nii.gz"). The extension is empty for Cancel/SingleFile.
+        struct MultiSaveChoice {
+          MultiSaveMode mode;
+          std::string extension;
+        };
+
+        // `folder_formats` lists the extensions to offer for the per-file
+        // (Folder) case; the first entry is the default selection.
+        MultiSaveChoice ask_multi_save_mode (QWidget* parent, const std::string& what,
+                                             const vector<std::string>& folder_formats);
 
         std::string get_folder (QWidget* parent, const std::string& caption, std::string* folder = nullptr);
         std::string get_file (QWidget* parent, const std::string& caption, const std::string& filter = std::string(), std::string* folder = nullptr);

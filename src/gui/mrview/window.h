@@ -86,6 +86,12 @@ namespace MR
           void parse_arguments ();
           void add_images (vector<std::unique_ptr<MR::Header>>& list);
 
+          // Whole-scene session save/restore (base images + each tool's session
+          // hook). Used by the Session tool and by the hidden autosave file.
+          bool save_session (const std::string& path);
+          bool load_session (const std::string& path);
+          static std::string autosave_session_path ();
+
           const QPoint& mouse_position () const { return mouse_position_; }
           const QPoint& mouse_displacement () const { return mouse_displacement_; }
           Qt::MouseButtons mouse_buttons () const { return buttons_; }

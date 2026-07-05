@@ -15,6 +15,13 @@
  */
 
 #include <QMessageBox>
+#include <QDialog>
+#include <QComboBox>
+#include <QRadioButton>
+#include <QDialogButtonBox>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QLabel>
 
 #include "app.h"
 #include "gui/gui.h"
@@ -38,20 +45,57 @@ namespace MR
 
 
 
-        MultiSaveMode ask_multi_save_mode (QWidget* parent, const std::string& what)
+        MultiSaveChoice ask_multi_save_mode (QWidget* parent, const std::string& what,
+                                             const vector<std::string>& folder_formats)
         {
-          QMessageBox box (parent);
-          box.setWindowTitle (qstr ("Save " + what));
-          box.setText (qstr ("Saving " + what + "."));
-          box.setInformativeText ("Save as a single combined file, or as individual files in a folder?");
-          QPushButton* single = box.addButton ("Single combined file", QMessageBox::AcceptRole);
-          QPushButton* folder = box.addButton ("Individual files in a folder", QMessageBox::AcceptRole);
-          box.addButton (QMessageBox::Cancel);
-          box.setDefaultButton (single);
-          box.exec();
-          if (box.clickedButton() == single) return MultiSaveMode::SingleFile;
-          if (box.clickedButton() == folder) return MultiSaveMode::Folder;
-          return MultiSaveMode::Cancel;
+          QDialog dialog (parent);
+          dialog.setWindowTitle (qstr ("Save " + what));
+
+          QVBoxLayout* layout = new QVBoxLayout (&dialog);
+
+          QLabel* prompt = new QLabel (qstr ("Saving " + what
+                + ".\nSave as a single combined file, or as individual files in a folder?"), &dialog);
+          prompt->setWordWrap (true);
+          layout->addWidget (prompt);
+
+          QRadioButton* single = new QRadioButton ("Single combined file", &dialog);
+          QRadioButton* folder = new QRadioButton ("Individual files in a folder", &dialog);
+          single->setChecked (true);
+          layout->addWidget (single);
+          layout->addWidget (folder);
+
+          // Format drop-down applies to the per-file (folder) case; enabled only
+          // when that mode is selected.
+          QHBoxLayout* fmt_row = new QHBoxLayout;
+          QLabel* fmt_label = new QLabel ("File format:", &dialog);
+          QComboBox* fmt_combo = new QComboBox (&dialog);
+          for (const auto& ext : folder_formats)
+            fmt_combo->addItem (qstr (ext));
+          fmt_label->setEnabled (false);
+          fmt_combo->setEnabled (false);
+          QObject::connect (folder, &QRadioButton::toggled, fmt_label, &QWidget::setEnabled);
+          QObject::connect (folder, &QRadioButton::toggled, fmt_combo, &QWidget::setEnabled);
+          fmt_row->addWidget (fmt_label);
+          fmt_row->addWidget (fmt_combo, 1);
+          layout->addLayout (fmt_row);
+
+          QDialogButtonBox* buttons = new QDialogButtonBox (
+              QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+          QObject::connect (buttons, SIGNAL (accepted()), &dialog, SLOT (accept()));
+          QObject::connect (buttons, SIGNAL (rejected()), &dialog, SLOT (reject()));
+          layout->addWidget (buttons);
+
+          MultiSaveChoice choice { MultiSaveMode::Cancel, std::string() };
+          if (dialog.exec() != QDialog::Accepted)
+            return choice;
+
+          if (folder->isChecked()) {
+            choice.mode = MultiSaveMode::Folder;
+            choice.extension = fmt_combo->currentText().toUtf8().data();
+          } else {
+            choice.mode = MultiSaveMode::SingleFile;
+          }
+          return choice;
         }
 
 

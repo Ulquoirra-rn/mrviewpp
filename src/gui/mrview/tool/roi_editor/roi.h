@@ -17,6 +17,9 @@
 #ifndef __gui_mrview_tool_roi_editor_roi_h__
 #define __gui_mrview_tool_roi_editor_roi_h__
 
+#include <atomic>
+#include <thread>
+
 #include "memory.h"
 #include "transform.h"
 #include "types.h"
@@ -86,6 +89,7 @@ namespace MR
 
           protected:
              QPushButton *hide_all_button, *close_button, *save_button;
+             QPushButton *grow_cut_button, *region_grow_button;
              QToolButton *draw_button, *undo_button, *redo_button;
              QToolButton *brush_button, *rectangle_button, *fill_button, *grow_mode_button;
              QToolButton *copy_from_above_button, *copy_from_below_button;
@@ -113,6 +117,18 @@ namespace MR
              void save (ROI_Item*);
              void write_roi_mask (ROI_Item*, const std::string& path);
              void save_label_map (const vector<ROI_Item*>&, const std::string& path);
+
+             // --- background (non-blocking) segmentation ---
+             // The heavy grow-cut / region-grow compute runs on seg_thread so the
+             // viewer stays usable; GL reads/uploads stay on the GUI thread.
+             QProgressBar* seg_progress;
+             QLabel* seg_status;
+             std::thread seg_thread;
+             std::atomic<bool> seg_running { false };
+             std::atomic<bool> seg_cancel { false };
+             void set_seg_controls_enabled (bool on);
+             void seg_show_progress (const QString& msg);
+             void seg_finish (const QString& msg);
 
              // Interactive scroll-driven 2D region-grow state:
              bool grow_active;
