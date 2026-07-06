@@ -108,19 +108,35 @@ jobs:
           ./build bin/mrview
       - name: Stage self-contained dist
         run: |
+          set -e
           mkdir -p dist
           cp bin/mrview.exe dist/mrview++.exe
           cp -u lib/libmrtrix.dll dist/ 2>/dev/null || cp -u bin/libmrtrix.dll dist/ 2>/dev/null || true
-          # windeployqt is named windeployqt-qt5 on MSYS2
+          # windeployqt is named windeployqt-qt5 on MSYS2. Do NOT pass
+          # --no-opengl-sw: keeping opengl32sw.dll lets the app fall back to
+          # software OpenGL on machines without adequate GPU GL drivers (a
+          # common "blank window / failed to start" cause on clean PCs).
           WDQ="$(command -v windeployqt-qt5 || command -v windeployqt)"
           echo "using windeployqt: $WDQ"
-          "$WDQ" --release --no-translations --no-angle --no-opengl-sw dist/mrview++.exe
-          # copy every non-Windows-system DLL the exe needs (mingw runtime,
-          # libmrtrix, image codecs) that windeployqt didn't already place.
+          "$WDQ" --release --no-translations --no-angle dist/mrview++.exe
+          # MinGW C++ runtime DLLs (belt-and-suspenders in case ldd/windeployqt
+          # missed any) - without these the app won't start on a clean Windows.
+          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            cp -u "/mingw64/bin/$r" dist/ 2>/dev/null || true
+          done
+          # copy every non-Windows-system DLL the exe needs (libmrtrix + image
+          # codecs) that windeployqt didn't already place.
           for dll in $(ldd dist/mrview++.exe | awk '{print $3}' | grep -viE '^/c/windows'); do
             [ -f "$dll" ] && cp -u "$dll" dist/ 2>/dev/null || true
           done
-          echo "=== dist contents ==="; ls dist
+          echo "=== dist contents ==="; ls -R dist
+          # Sanity-check the bundle so CI never ships an installer that can't start.
+          missing=0
+          [ -f dist/platforms/qwindows.dll ] || { echo "MISSING platforms/qwindows.dll"; missing=1; }
+          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            [ -f "dist/$r" ] || { echo "MISSING runtime $r"; missing=1; }
+          done
+          [ "$missing" = 0 ] || { echo "ERROR: incomplete Windows bundle - not shipping"; exit 1; }
       - name: Portable zip (unzip-and-run)
         uses: actions/upload-artifact@v4
         with: { name: mrview++-windows-portable, path: "dist" }
