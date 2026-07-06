@@ -148,12 +148,15 @@ jobs:
           # platform plugin present, and no unresolved DLL for the main exe.
           missing=0
           [ -f dist/platforms/qwindows.dll ] || { echo "MISSING platforms/qwindows.dll"; missing=1; }
-          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libdouble-conversion.dll; do
+          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libdouble-conversion.dll \
+                   libfreetype-6.dll libharfbuzz-0.dll libpcre2-16-0.dll libglib-2.0-0.dll; do
             [ -f "dist/$r" ] || { echo "MISSING runtime $r"; missing=1; }
           done
-          if ldd dist/mrview++.exe 2>/dev/null | grep -i 'not found'; then
-            echo "UNRESOLVED dependency for mrview++.exe"; missing=1
-          fi
+          # Informational only: ldd on MSYS can't locate genuine Windows system
+          # DLLs (dxgi, d3d, etc.) that exist on every real Windows, so a "not
+          # found" here is expected and must NOT fail the build.
+          echo "=== ldd 'not found' (expected: Windows system DLLs) ==="
+          ldd dist/mrview++.exe 2>/dev/null | grep -i 'not found' || echo "(none)"
           [ "$missing" = 0 ] || { echo "ERROR: incomplete Windows bundle - not shipping"; exit 1; }
       - name: Portable zip (unzip-and-run)
         uses: actions/upload-artifact@v4
