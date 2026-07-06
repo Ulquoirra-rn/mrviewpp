@@ -221,6 +221,19 @@ jobs:
           echo "=== ldd 'not found' (expected: Windows system DLLs) ==="
           ldd dist/mrview++.exe 2>/dev/null | grep -i 'not found' || echo "(none)"
           [ "$missing" = 0 ] || { echo "ERROR: incomplete Windows bundle - not shipping"; exit 1; }
+      - name: Embed the mrview++ icon into the exe
+        shell: pwsh
+        run: |
+          # The MinGW build embeds no Win32 icon, so Explorer/shortcuts show a
+          # generic exe icon. Generate the .ico from the mrview++ logo and inject
+          # it into the exe with rcedit.
+          magick convert icons/mrview++.png -define icon:auto-resize=256,128,64,48,32,16 packaging/windows/mrviewpp.ico `
+            2>$null; if (!(Test-Path packaging/windows/mrviewpp.ico)) { magick icons/mrview++.png -define icon:auto-resize=256,128,64,48,32,16 packaging/windows/mrviewpp.ico }
+          choco install rcedit -y --no-progress
+          $rcedit = (Get-Command rcedit -ErrorAction SilentlyContinue).Source
+          if (-not $rcedit) { $rcedit = "C:\ProgramData\chocolatey\bin\rcedit.exe" }
+          & $rcedit "dist\mrview++.exe" --set-icon "packaging\windows\mrviewpp.ico"
+          Write-Host "embedded icon into mrview++.exe"
       - name: Smoke-test the exe (catch startup runtime failures)
         shell: pwsh
         run: |

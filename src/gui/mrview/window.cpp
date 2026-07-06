@@ -268,7 +268,7 @@ namespace MR
           //CONF default: 30
           //CONF The size of the icons in the main MRView toolbar.
           setWindowTitle (tr ("mrview++"));
-          setWindowIcon (QPixmap (":/mrtrix.png"));
+          setWindowIcon (QPixmap (":/mrview++.png"));
           {
             int iconsize = MR::File::Config::get_int ("IconSize", 30);
             setIconSize (QSize (iconsize, iconsize));
