@@ -81,16 +81,16 @@ jobs:
         with: { name: mrview++-linux, path: "mrview++-x86_64.AppImage" }
 
   # ------------------------------------------------- Debian/Ubuntu .deb ------
-  # Built on BOTH Ubuntu LTS releases: the binary links that distro's system Qt
-  # and dpkg-shlibdeps records the matching Qt package names (22.04 = libqt5*5a,
-  # 24.04 = libqt5*5t64). Each .deb is smoke-tested by installing it in a clean
-  # container of the same release and launching mrview++ headlessly.
+  # Built on Ubuntu 24.04: the binary links that distro's system Qt (5.15.13) and
+  # dpkg-shlibdeps records the matching Qt package names (libqt5*5t64). The .deb
+  # is smoke-tested by installing it in a clean ubuntu:24.04 container and
+  # launching mrview++ headlessly.
   deb:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
