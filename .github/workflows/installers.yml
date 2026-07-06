@@ -160,7 +160,9 @@ jobs:
           # MSYS2 ships qmake as qmake-qt5(.exe); moc/rcc are unprefixed.
           export EIGEN_CFLAGS="-I/mingw64/include/eigen3"
           export QMAKE="$(command -v qmake-qt5 || command -v qmake)"
-          export LINKFLAGS="-lopengl32"
+          # -mwindows: build as a GUI-subsystem app so double-clicking doesn't
+          # pop up a console window (mrview is a viewer, not a terminal tool).
+          export LINKFLAGS="-lopengl32 -mwindows"
           echo "using QMAKE=$QMAKE"; "$QMAKE" -v || true
           ./configure
           ./build bin/mrview
