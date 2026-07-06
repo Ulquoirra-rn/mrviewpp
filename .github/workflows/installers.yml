@@ -109,6 +109,7 @@ jobs:
       - name: Stage self-contained dist
         run: |
           set -e
+          shopt -s globstar nullglob
           mkdir -p dist
           cp bin/mrview.exe dist/mrview++.exe
           cp -u lib/libmrtrix.dll dist/ 2>/dev/null || cp -u bin/libmrtrix.dll dist/ 2>/dev/null || true
@@ -119,23 +120,40 @@ jobs:
           WDQ="$(command -v windeployqt-qt5 || command -v windeployqt)"
           echo "using windeployqt: $WDQ"
           "$WDQ" --release --no-translations --no-angle dist/mrview++.exe
-          # MinGW C++ runtime DLLs (belt-and-suspenders in case ldd/windeployqt
-          # missed any) - without these the app won't start on a clean Windows.
-          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-            cp -u "/mingw64/bin/$r" dist/ 2>/dev/null || true
+
+          # Copy EVERY MinGW DLL that anything in dist/ depends on, walking deps
+          # recursively to closure. windeployqt / a single ldd of the exe miss
+          # transitive deps of the bundled DLLs & plugins (e.g. the
+          # libdouble-conversion.dll that Qt5Core needs).
+          copy_round () {
+            copied=0
+            for f in dist/*.exe dist/*.dll dist/**/*.dll; do
+              [ -e "$f" ] || continue
+              for dep in $(ldd "$f" 2>/dev/null | awk '{print $3}' | grep -iE '/(mingw64|mingw32|ucrt64|clang64)/'); do
+                b="$(basename "$dep")"
+                if [ -f "$dep" ] && [ ! -f "dist/$b" ]; then
+                  cp "$dep" dist/ && copied=$((copied+1))
+                fi
+              done
+            done
+          }
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            copy_round
+            echo "dependency pass $i: copied $copied new DLL(s)"
+            [ "$copied" -eq 0 ] && break
           done
-          # copy every non-Windows-system DLL the exe needs (libmrtrix + image
-          # codecs) that windeployqt didn't already place.
-          for dll in $(ldd dist/mrview++.exe | awk '{print $3}' | grep -viE '^/c/windows'); do
-            [ -f "$dll" ] && cp -u "$dll" dist/ 2>/dev/null || true
-          done
+
           echo "=== dist contents ==="; ls -R dist
-          # Sanity-check the bundle so CI never ships an installer that can't start.
+          # Sanity-check the bundle so CI never ships an installer that can't start:
+          # platform plugin present, and no unresolved DLL for the main exe.
           missing=0
           [ -f dist/platforms/qwindows.dll ] || { echo "MISSING platforms/qwindows.dll"; missing=1; }
-          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+          for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libdouble-conversion.dll; do
             [ -f "dist/$r" ] || { echo "MISSING runtime $r"; missing=1; }
           done
+          if ldd dist/mrview++.exe 2>/dev/null | grep -i 'not found'; then
+            echo "UNRESOLVED dependency for mrview++.exe"; missing=1
+          fi
           [ "$missing" = 0 ] || { echo "ERROR: incomplete Windows bundle - not shipping"; exit 1; }
       - name: Portable zip (unzip-and-run)
         uses: actions/upload-artifact@v4
