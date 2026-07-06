@@ -1197,8 +1197,13 @@ getting MRtrix version from folder "''' + mrtrix_dir[-1] + '"...\n  ')
     log ('  ')
     version = version_from_git (mrtrix_dir[-1])
     if version[0] != tag:
-      fail ('ERROR: version stored in "' + os.path.join (lib_dir, 'version.h') + '" does not match git tag name\n')
-    mrtrix_version.version = version[1]
+      # This fork carries release tags (e.g. "v3.0.0") that differ from the
+      # MRtrix base version recorded in version.h. That mismatch is expected
+      # and must not be fatal, so fall back to the version.h value.
+      log ('WARNING: git tag "' + version[0] + '" does not match version.h ("' + tag + '"); using version.h\n  ')
+      mrtrix_version.version = tag
+    else:
+      mrtrix_version.version = version[1]
   except LookupError:
     mrtrix_version.version = tag
 
