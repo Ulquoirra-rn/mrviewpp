@@ -79,15 +79,46 @@ jobs:
         run: bash packaging/linux/make_appimage.sh
       - uses: actions/upload-artifact@v4
         with: { name: mrview++-linux, path: "mrview++-x86_64.AppImage" }
-      - name: Package .deb
-        run: bash packaging/linux/make_deb.sh
-      - name: Verify .deb installs & launches in a clean Ubuntu container
+
+  # ------------------------------------------------- Debian/Ubuntu .deb ------
+  # Built on BOTH Ubuntu LTS releases: the binary links that distro's system Qt
+  # and dpkg-shlibdeps records the matching Qt package names (22.04 = libqt5*5a,
+  # 24.04 = libqt5*5t64). Each .deb is smoke-tested by installing it in a clean
+  # container of the same release and launching mrview++ headlessly.
+  deb:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # tags -> correct package version
+      - name: Install dependencies
         run: |
-          # Install the .deb in a pristine ubuntu:22.04 (only what its apt
-          # dependencies pull in - NO build tools, NO stray /usr/local Qt), then
-          # smoke-test that it actually starts. This catches missing
-          # dependencies / Qt problems before the package is ever released.
-          docker run --rm -v "$PWD:/w" -w /w ubuntu:22.04 bash -c '
+          sudo apt-get update
+          sudo apt-get install -y g++ python3 zlib1g-dev libeigen3-dev \
+            qtbase5-dev libqt5opengl5-dev libqt5svg5-dev \
+            libtiff-dev libpng-dev libjpeg-dev libopenjp2-7-dev \
+            libgl1-mesa-dev wget file dpkg-dev
+      - name: Build
+        run: |
+          ./configure
+          ./build bin/mrview
+      - name: Package .deb (deps computed for this distro)
+        run: |
+          bash packaging/linux/make_deb.sh
+          ver="$(. /etc/os-release; echo "$VERSION_ID")"
+          for f in mrview++_*_amd64.deb; do
+            mv "$f" "${f%.deb}_ubuntu${ver}.deb"
+          done
+          ls -1 mrview++_*.deb
+      - name: Verify .deb installs & launches in a clean container
+        run: |
+          img="ubuntu:$(. /etc/os-release; echo "$VERSION_ID")"
+          echo "smoke-testing in $img"
+          docker run --rm -v "$PWD:/w" -w /w "$img" bash -c '
             set -e
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
@@ -102,7 +133,7 @@ jobs:
             echo "deb smoke test OK"
           '
       - uses: actions/upload-artifact@v4
-        with: { name: mrview++-deb, path: "mrview++_*.deb" }
+        with: { name: mrview++-deb-${{ matrix.os }}, path: "mrview++_*.deb" }
 
   # --------------------------------------------------------------- Windows ---
   windows:
@@ -200,7 +231,7 @@ jobs:
   # On a version tag push (v*), gather the three installers and publish a
   # GitHub Release with them attached for one-click public download.
   release:
-    needs: [macos, linux, windows]
+    needs: [macos, linux, deb, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -213,7 +244,7 @@ jobs:
           mkdir -p rel
           cp art/mrview++-macos/*.dmg          rel/ 2>/dev/null || true
           cp art/mrview++-linux/*.AppImage      rel/ 2>/dev/null || true
-          cp art/mrview++-deb/*.deb             rel/ 2>/dev/null || true
+          cp art/mrview++-deb-*/*.deb           rel/ 2>/dev/null || true
           cp art/mrview++-windows-setup/*.exe   rel/ 2>/dev/null || true
           if [ -d art/mrview++-windows-portable ]; then
             (cd art/mrview++-windows-portable && zip -qr ../../rel/mrview++-windows-portable.zip .)

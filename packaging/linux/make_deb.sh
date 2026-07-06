@@ -73,8 +73,26 @@ Categories=Science;MedicalSoftware;
 Terminal=false
 EOF
 
-# Runtime dependencies (system Qt + image codecs). Package names track the
-# Ubuntu 22.04 runner; adjust if targeting a different release.
+# Runtime dependencies: compute them from the actual linked libraries with
+# dpkg-shlibdeps so the package declares the CORRECT system-Qt package names for
+# whatever distro it is built on (Qt is 'libqt5core5a' on Ubuntu 22.04 but
+# 'libqt5core5t64' on 24.04, etc.). Fall back to a 22.04-style list if the tool
+# isn't available. Build on the distro you target so the binary + deps + system
+# Qt all match (this uses the system Qt - nothing is bundled).
+DEPS=""
+if command -v dpkg-shlibdeps >/dev/null 2>&1; then
+  ABSROOT="$PWD/$ROOT"
+  TMPD="$(mktemp -d)"
+  mkdir -p "$TMPD/debian"
+  printf 'Source: mrview++\nPackage: mrview++\nArchitecture: any\n' > "$TMPD/debian/control"
+  ( cd "$TMPD" && dpkg-shlibdeps -O --ignore-missing-info \
+      "$ABSROOT/usr/lib/mrview++/mrview" "$ABSROOT"/usr/lib/mrview++/*.so* 2>/dev/null ) > "$TMPD/deps.txt" || true
+  DEPS="$(sed -n 's/^shlibs:Depends=//p' "$TMPD/deps.txt")"
+  rm -rf "$TMPD"
+fi
+[ -n "$DEPS" ] || DEPS="libc6, libstdc++6, libgcc-s1, zlib1g, libgl1, libqt5core5a, libqt5gui5, libqt5widgets5, libqt5opengl5, libqt5svg5, libtiff5, libpng16-16, libjpeg-turbo8, libopenjp2-7"
+echo "computed Depends: $DEPS"
+
 cat > "$ROOT/DEBIAN/control" <<EOF
 Package: mrview++
 Version: ${VERSION}
@@ -82,7 +100,7 @@ Section: science
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: BrainSight AI <aryan.tiwary@brainsightai.com>
-Depends: libc6, libstdc++6, libgcc-s1, zlib1g, libqt5core5a, libqt5gui5, libqt5widgets5, libqt5opengl5, libqt5svg5, libgl1, libtiff5, libpng16-16, libjpeg-turbo8, libopenjp2-7
+Depends: ${DEPS}
 Description: mrview++ medical image viewer
  A native cross-platform fork of MRtrix3's mrview for viewing MRI/medical
  images, overlays, tractograms, meshes and atlases. Qt and the image codecs
