@@ -77,29 +77,25 @@ get linuxdeploy-plugin-qt-x86_64.AppImage https://github.com/linuxdeploy/linuxde
 PKG="mrview++_${VERSION}_${ARCH}"
 ROOT="$PKG"
 rm -rf "$ROOT"
-mkdir -p "$ROOT/DEBIAN" "$ROOT/opt/mrview++" "$ROOT/usr/bin" \
+mkdir -p "$ROOT/DEBIAN" "$ROOT/opt" "$ROOT/usr/bin" \
          "$ROOT/usr/share/applications" \
          "$ROOT/usr/share/icons/hicolor/512x512/apps"
 
-cp -a "$APPDIR/usr/bin" "$ROOT/opt/mrview++/bin"
-cp -a "$APPDIR/usr/lib" "$ROOT/opt/mrview++/lib"
-# linuxdeploy-plugin-qt places Qt plugins under usr/plugins (older) or plugins/.
-for p in "$APPDIR/usr/plugins" "$APPDIR/plugins"; do
-  [ -d "$p" ] && cp -a "$p" "$ROOT/opt/mrview++/plugins"
-done
+# Ship the ENTIRE bundled AppDir - including linuxdeploy's AppRun. AppRun sets
+# up LD_LIBRARY_PATH and the Qt plugin paths to the bundled Qt exactly right, so
+# the system Qt is never loaded (avoids "cannot mix incompatible Qt library").
+cp -a "$APPDIR" "$ROOT/opt/mrview++"
+[ -x "$ROOT/opt/mrview++/AppRun" ] || { echo "ERROR: linuxdeploy did not produce AppRun in $APPDIR"; exit 1; }
 
 cp "$APPDIR/usr/share/icons/hicolor/512x512/apps/mrview++.png" \
    "$ROOT/usr/share/icons/hicolor/512x512/apps/mrview++.png"
 cp "$APPDIR/usr/share/applications/mrview++.desktop" \
    "$ROOT/usr/share/applications/mrview++.desktop"
 
+# Launcher on the PATH delegates to the bundled AppRun (fully self-contained Qt).
 cat > "$ROOT/usr/bin/mrview++" <<'EOF'
 #!/bin/sh
-HERE=/opt/mrview++
-export LD_LIBRARY_PATH="$HERE/lib:${LD_LIBRARY_PATH}"
-[ -d "$HERE/plugins" ] && export QT_PLUGIN_PATH="$HERE/plugins"
-[ -d "$HERE/plugins/platforms" ] && export QT_QPA_PLATFORM_PLUGIN_PATH="$HERE/plugins/platforms"
-exec "$HERE/bin/mrview++" "$@"
+exec /opt/mrview++/AppRun "$@"
 EOF
 chmod 0755 "$ROOT/usr/bin/mrview++"
 
