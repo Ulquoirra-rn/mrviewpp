@@ -133,7 +133,9 @@ jobs:
             echo "deb smoke test OK"
           '
       - uses: actions/upload-artifact@v4
-        with: { name: mrview++-deb-${{ matrix.os }}, path: "mrview++_*.deb" }
+        with:
+          name: mrview++-deb-${{ matrix.os }}
+          path: "mrview++_*.deb"
 
   # --------------------------------------------------------------- Windows ---
   windows:
@@ -168,7 +170,11 @@ jobs:
           shopt -s globstar nullglob
           mkdir -p dist
           cp bin/mrview.exe dist/mrview++.exe
-          cp -u lib/libmrtrix.dll dist/ 2>/dev/null || cp -u bin/libmrtrix.dll dist/ 2>/dev/null || true
+          # Core MRtrix DLL - the MinGW build may name it mrtrix.dll or
+          # libmrtrix.dll and place it in lib/ or bin/; copy whichever exists.
+          cp -u lib/*mrtrix*.dll dist/ 2>/dev/null || true
+          cp -u bin/*mrtrix*.dll dist/ 2>/dev/null || true
+          echo "=== mrtrix core DLL(s) staged ==="; ls dist/*mrtrix*.dll 2>/dev/null || echo "(none yet)"
           # windeployqt is named windeployqt-qt5 on MSYS2. Do NOT pass
           # --no-opengl-sw: keeping opengl32sw.dll lets the app fall back to
           # software OpenGL on machines without adequate GPU GL drivers (a
@@ -204,6 +210,7 @@ jobs:
           # platform plugin present, and no unresolved DLL for the main exe.
           missing=0
           [ -f dist/platforms/qwindows.dll ] || { echo "MISSING platforms/qwindows.dll"; missing=1; }
+          ls dist/*mrtrix*.dll >/dev/null 2>&1 || { echo "MISSING MRtrix core DLL"; missing=1; }
           for r in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libdouble-conversion.dll \
                    libfreetype-6.dll libharfbuzz-0.dll libpcre2-16-0.dll libglib-2.0-0.dll; do
             [ -f "dist/$r" ] || { echo "MISSING runtime $r"; missing=1; }
