@@ -221,6 +221,24 @@ jobs:
           echo "=== ldd 'not found' (expected: Windows system DLLs) ==="
           ldd dist/mrview++.exe 2>/dev/null | grep -i 'not found' || echo "(none)"
           [ "$missing" = 0 ] || { echo "ERROR: incomplete Windows bundle - not shipping"; exit 1; }
+      - name: Smoke-test the exe (catch startup runtime failures)
+        shell: pwsh
+        run: |
+          # Actually launch the staged exe so runtime startup failures (missing
+          # DLL dialog, "HOME not set", missing Qt plugin) fail CI - build-time
+          # checks can't catch these. A GUI staying open is fine (we kill it);
+          # only known-fatal messages fail the job.
+          $out = "smoke_out.txt"; $err = "smoke_err.txt"
+          $p = Start-Process -FilePath "dist\mrview++.exe" -ArgumentList "-help" `
+                 -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          Start-Sleep -Seconds 20
+          if (-not $p.HasExited) { Write-Host "still running (GUI opened) - killing"; $p.Kill() }
+          $log = ((Get-Content $out,$err -ErrorAction SilentlyContinue) -join "`n")
+          Write-Host "=== exe output ==="; Write-Host $log
+          if ($log -match "environment variable is not set|cannot proceed because|was not found|failed to start|Failed to load platform plugin") {
+            Write-Host "WINDOWS SMOKE TEST FAILED"; exit 1
+          }
+          Write-Host "windows smoke test OK"
       - name: Portable zip (unzip-and-run)
         uses: actions/upload-artifact@v4
         with: { name: mrview++-windows-portable, path: "dist" }

@@ -171,9 +171,20 @@ namespace MR
     inline std::string home ()
     {
       const char* home = getenv (HOME_ENV);
-      if (!home)
-        throw Exception (HOME_ENV " environment variable is not set!");
-      return home;
+      if (home)
+        return home;
+#ifdef MRTRIX_WINDOWS
+      // Native Windows usually has no HOME; fall back to the standard Windows
+      // location of the user's profile directory.
+      const char* userprofile = getenv ("USERPROFILE");
+      if (userprofile)
+        return userprofile;
+      const char* drive = getenv ("HOMEDRIVE");
+      const char* path = getenv ("HOMEPATH");
+      if (drive && path)
+        return std::string (drive) + path;
+#endif
+      throw Exception (HOME_ENV " environment variable is not set!");
     }
 
     class Dir { NOMEMALIGN
