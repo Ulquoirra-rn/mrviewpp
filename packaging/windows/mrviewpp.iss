@@ -19,13 +19,21 @@
 ; Produces: Output\mrview++-setup.exe
 
 #define AppName "mrview++"
-#define AppVer  "3.0"
+; Version can be overridden from the command line: ISCC /DAppVer=3.0.5
+#ifndef AppVer
+  #define AppVer "3.0"
+#endif
 
 [Setup]
+; A fixed AppId lets Inno recognise an existing install and upgrade it IN PLACE
+; (same folder, single Add/Remove entry) instead of installing side-by-side.
+AppId={{4E544E81-4461-495E-9846-CE69A87FEB8A}
 AppName={#AppName}
 AppVersion={#AppVer}
+VersionInfoVersion={#AppVer}
 AppPublisher=BrainSight AI
 DefaultDirName={autopf}\{#AppName}
+UsePreviousAppDir=yes
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\mrview++.exe
@@ -34,6 +42,9 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=mrview++-setup
 SetupIconFile=mrviewpp.ico
+; On upgrade, close a running mrview++ so its files can be replaced.
+CloseApplications=yes
+RestartApplications=no
 
 [Files]
 ; Everything staged in dist\ (exe + all DLLs + Qt plugins) is installed as-is.

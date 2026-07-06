@@ -25,6 +25,7 @@
 #include "dwi/tractography/file_trx.h"
 #include "dwi/tractography/file_trx_write.h"
 #include "gui/mrview/window.h"
+#include "gui/mrview/qthelpers.h"
 #include "gui/mrview/colour_palette.h"
 #include "gui/mrview/tool/tractography/tractography.h"
 #include "gui/dialog/file.h"
@@ -532,7 +533,7 @@ namespace MR
             vector<std::string> list;
             QList<QUrl> urlList = mimeData->urls();
             for (int i = 0; i < urlList.size() && i < max_files; ++i) {
-                list.push_back (urlList.at (i).path().toUtf8().constData());
+                list.push_back (QtHelpers::url_to_std_string (urlList.at (i)));
             }
             try {
               tractogram_list_model->add_items (list, *this);

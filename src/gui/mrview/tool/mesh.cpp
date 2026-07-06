@@ -17,6 +17,7 @@
 #include "mrtrix.h"
 #include "surface/mesh.h"
 #include "gui/mrview/window.h"
+#include "gui/mrview/qthelpers.h"
 #include "gui/mrview/tool/mesh.h"
 #include "gui/dialog/file.h"
 #include "gui/mrview/tool/list_model_base.h"
@@ -471,7 +472,7 @@ namespace MR
             vector<std::string> list;
             QList<QUrl> urlList = mimeData->urls();
             for (int i = 0; i < urlList.size(); ++i)
-              list.push_back (urlList.at (i).path().toUtf8().constData());
+              list.push_back (QtHelpers::url_to_std_string (urlList.at (i)));
             add_meshes (list);
             event->acceptProposedAction();
           }

@@ -263,7 +263,12 @@ jobs:
           choco install innosetup -y --no-progress
           # generate .ico from the PNG for the installer
           magick convert icons/mrview++.png -define icon:auto-resize=256,128,64,48,32,16 packaging/windows/mrviewpp.ico || copy icons\mrview++.png packaging\windows\mrviewpp.ico
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows\mrviewpp.iss
+          # pass the release version (from the vX.Y.Z tag) so the installer's
+          # AppVersion is correct; the fixed AppId makes it upgrade in place.
+          $ver = "3.0"
+          if ($env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
+          Write-Host "installer AppVer=$ver"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVer=$ver" packaging\windows\mrviewpp.iss
       - uses: actions/upload-artifact@v4
         with: { name: mrview++-windows-setup, path: "packaging/windows/Output/*.exe" }
 

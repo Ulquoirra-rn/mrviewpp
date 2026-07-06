@@ -25,6 +25,7 @@
 #include "file/path.h"
 #include "gui/gui.h"
 #include "gui/mrview/colour_palette.h"
+#include "gui/mrview/qthelpers.h"
 #include "gui/mrview/gui_image.h"
 #include "gui/mrview/window.h"
 #include "gui/mrview/mode/slice.h"
@@ -315,7 +316,7 @@ namespace MR
             QList<QUrl> urlList = mimeData->urls();
             for (int i = 0; i < urlList.size() && i < max_files; ++i) {
               try {
-                list.push_back (make_unique<MR::Header> (MR::Header::open (urlList.at (i).path().toUtf8().constData())));
+                list.push_back (make_unique<MR::Header> (MR::Header::open (QtHelpers::url_to_std_string (urlList.at (i)))));
               }
               catch (Exception& e) {
                 e.display();
