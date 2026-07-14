@@ -52,10 +52,18 @@ jobs:
           </dict></plist>
           PLIST
           install_name_tool -add_rpath @loader_path/../MacOS "$APP/Contents/MacOS/mrview++" || true
-          macdeployqt "$APP" -dmg
-          mv mrview++.dmg mrview++-macos.dmg || mv *.dmg mrview++-macos.dmg
+          # Bundle Qt + deps (no -dmg yet): macdeployqt rewrites rpaths, which
+          # invalidates any code signature.
+          macdeployqt "$APP"
+          # Re-sign the WHOLE bundle ad-hoc AFTER macdeployqt. On Apple Silicon an
+          # invalid/absent signature is fatal ("Code Signature Invalid" SIGKILL),
+          # which is what happens if this step is skipped.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP" || { echo "codesign verify failed"; exit 1; }
+          # Package the signed bundle into a drag-to-Applications .dmg.
+          hdiutil create -volname mrview++ -srcfolder "$APP" -ov -format UDZO mrview++-macos.dmg
       - uses: actions/upload-artifact@v4
-        with: { name: mrview++-macos, path: "*.dmg" }
+        with: { name: mrview++-macos, path: "mrview++-macos.dmg" }
 
   # ---------------------------------------------------------------- Ubuntu ---
   linux:
