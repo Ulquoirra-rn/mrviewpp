@@ -26,8 +26,14 @@
 #else
 #include <QtGui>
 #endif
+#if QT_VERSION < 0x060000
 #include <QGLWidget>
+#endif
+#ifdef MRTRIX_WASM
+#include "gui/opengl/gl_gles3_wasm.h"
+#else
 #include "gui/opengl/gl_core_3_3.h"
+#endif
 
 // necessary to avoid conflict with Qt4's macros:
 #ifdef Complex

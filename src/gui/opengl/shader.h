@@ -60,7 +60,16 @@ namespace MR
             operator GLuint () const { return (index_); }
 
             void compile (const std::string& source) {
+#ifdef MRTRIX_WASM
+              // WebGL2 / GLES 3.00: version + default precisions (per-shader GLSL-ES
+              // content fixes live in the shader sources themselves).
+              std::string code = "#version 300 es\n"
+                                 "precision highp float;\nprecision highp int;\n"
+                                 "precision highp sampler2D;\nprecision highp sampler3D;\n"
+                                 "precision highp isampler3D;\nprecision highp usampler3D;\n" + source;
+#else
               std::string code = "#version 330 core\n" + source;
+#endif
               DEBUG ("compiling OpenGL " + this->type() + " shader:\n" + code);
               if (!index_) {
                 index_ = gl::CreateShader (TYPE);
