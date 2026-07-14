@@ -60,10 +60,16 @@ namespace MR
         f.setDoubleBuffer (true);
 #endif
 
+#ifdef MRTRIX_WASM
+        // Browser: request an OpenGL ES 3.0 surface (backed by WebGL2).
+        f.setRenderableType (GL::Format::OpenGLES);
+        f.setVersion (3, 0);
+#else
         if (File::Config::get_bool ("NeedOpenGLCoreProfile", true)) {
           f.setVersion (3,3);
           f.setProfile (GL::Format::CoreProfile);
         }
+#endif
 
         f.setDepthBufferSize (24);
         f.setRedBufferSize (8);
