@@ -24,7 +24,9 @@
 #include "gui/mrview/file_open.h"
 #include "gui/mrview/mode/list.h"
 #include "gui/mrview/tool/list.h"
+#ifndef MRTRIX_WASM
 #include "gui/mrview/sync/syncmanager.h"
+#endif
 
 
 using namespace MR;
@@ -100,9 +102,11 @@ void run ()
   //CONF Enable syncing of focus/view between separate MRView processes. Uses a
   //CONF system semaphore; disabled by default to avoid a stale lock hanging
   //CONF startup if a process exits uncleanly.
+#ifndef MRTRIX_WASM
   std::unique_ptr<MR::GUI::MRView::Sync::SyncManager> sync;
   if (File::Config::get_bool ("MRViewSyncProcesses", false))
     sync.reset (new MR::GUI::MRView::Sync::SyncManager);
+#endif
   window.show();
   try {
     window.parse_arguments();

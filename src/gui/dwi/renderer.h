@@ -17,7 +17,11 @@
 #ifndef __gui_dwi_renderer_h__
 #define __gui_dwi_renderer_h__
 
-#include <QGLWidget>
+#if QT_VERSION < 0x060000
+#include <QOpenGLWidget>
+#else
+#include <QOpenGLWidget>
+#endif
 #include <Eigen/Eigenvalues>
 
 #include "gui/gui.h"
@@ -54,7 +58,7 @@ namespace MR
 
           enum class mode_t { SH, TENSOR, DIXEL };
 
-          Renderer (QGLWidget*);
+          Renderer (QOpenGLWidget*);
 
           bool ready () const { return shader; }
 
@@ -229,7 +233,7 @@ namespace MR
           } dixel;
 
         private:
-          QGLWidget* context_;
+          QOpenGLWidget* context_;
 
 
       };

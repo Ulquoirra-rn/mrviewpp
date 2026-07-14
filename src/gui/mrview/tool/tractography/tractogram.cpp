@@ -482,7 +482,9 @@ namespace MR
               Tractogram::default_point_size * std::exp (2.0e-3f * line_thickness) * original_fov *
               (transform.width()+transform.height()) / ( 2.f * window().FOV());
 
+#ifndef MRTRIX_WASM
           glPointSize(point_size_screenspace);
+#endif
 
           if (tractography_tool.line_opacity < 1.0) {
             gl::Enable (gl::BLEND);

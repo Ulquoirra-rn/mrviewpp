@@ -101,7 +101,7 @@ namespace MR
             // Result of re-reading this tractogram from disk and dropping any
             // streamlines that fall entirely outside the active threshold.
             struct FilteredTracks { NOMEMALIGN
-              vector<DWI::Tractography::Streamline<float>> tracks;
+              vector<MR::DWI::Tractography::Streamline<float>> tracks;
               vector<vector<float>> dpv;   // per surviving track: one threshold value per vertex
               vector<float> dps;           // per surviving track: a single threshold value
               bool per_vertex = false, per_streamline = false;
@@ -170,7 +170,7 @@ namespace MR
             vector<GLuint> colour_buffers;
             vector<GLuint> intensity_scalar_buffers;
             vector<GLuint> threshold_scalar_buffers;
-            DWI::Tractography::Properties properties;
+            MR::DWI::Tractography::Properties properties;
             vector<vector<GLint> > track_starts;
             vector<vector<GLint> > track_sizes;
             vector<vector<GLint> > original_track_sizes;

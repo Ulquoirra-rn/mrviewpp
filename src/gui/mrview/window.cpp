@@ -14,7 +14,9 @@
  * For more details, see http://www.mrtrix.org/.
  */
 #include <QDebug>
+#ifndef MRTRIX_WASM
 #include <QProcess>
+#endif
 #include <QTimer>
 #include <fstream>
 #include "app.h"
@@ -874,9 +876,14 @@ namespace MR
 
       void Window::new_window_slot ()
       {
+#ifdef MRTRIX_WASM
+        // No separate processes in the browser.
+        QMessageBox::information (this, "New window", "Multiple windows are not available in the web version.");
+#else
         // mrview uses separate processes for multiple windows; launch a fresh one.
         if (!QProcess::startDetached (qApp->applicationFilePath(), QStringList()))
           QMessageBox::warning (this, "New window", "Failed to open a new mrview++ window.");
+#endif
       }
 
 
@@ -1719,7 +1726,7 @@ namespace MR
 
         int group = get_mouse_mode();
 
-        if (buttons_ == Qt::MidButton)
+        if (buttons_ == Qt::MiddleButton)
           mouse_action = Pan;
         else if (group == 1) {
           if (buttons_ == Qt::LeftButton) {

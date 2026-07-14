@@ -16,6 +16,12 @@
 
 #ifndef OPENGL_NOLOAD_STYLE_HPP
 #define OPENGL_NOLOAD_STYLE_HPP
+
+// On the WebAssembly build there is no desktop GL loader; the gl:: namespace is
+// provided by the GLES3/WebGL2 alias header instead. Defer to it (idempotent).
+#ifdef MRTRIX_WASM
+#include "gui/opengl/gl_gles3_wasm.h"
+#else
 /*
 #if defined(__glew_h__) || defined(__GLEW_H__)
 #error Attempt to include auto-generated header after including glew.h
@@ -1339,4 +1345,5 @@ namespace gl
   }
 
 }
+#endif // MRTRIX_WASM
 #endif //OPENGL_NOLOAD_STYLE_HPP

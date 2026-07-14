@@ -29,6 +29,8 @@
 #if QT_VERSION < 0x060000
 #include <QGLWidget>
 #endif
+#include <QOpenGLWidget>
+#include <QSurfaceFormat>
 #ifdef MRTRIX_WASM
 #include "gui/opengl/gl_gles3_wasm.h"
 #else

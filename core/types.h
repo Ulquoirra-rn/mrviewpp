@@ -186,6 +186,8 @@ inline void __aligned_free (void* ptr) { if (ptr) std::free (*(reinterpret_cast<
 #define MEMALIGN(...) public: \
   FORCE_INLINE void* operator new (std::size_t size) { return (alignof(__VA_ARGS__)>::MR::malloc_align) ? __aligned_malloc (size) : ::operator new (size); } \
   FORCE_INLINE void* operator new[] (std::size_t size) { return (alignof(__VA_ARGS__)>::MR::malloc_align) ? __aligned_malloc (size) : ::operator new[] (size); } \
+  FORCE_INLINE void* operator new (std::size_t, void* __p) { return __p; } \
+  FORCE_INLINE void operator delete (void*, void*) { } \
   FORCE_INLINE void operator delete (void* ptr) { if (alignof(__VA_ARGS__)>::MR::malloc_align) __aligned_free (ptr); else ::operator delete (ptr); } \
   FORCE_INLINE void operator delete[] (void* ptr) { if (alignof(__VA_ARGS__)>::MR::malloc_align) __aligned_free (ptr); else ::operator delete[] (ptr); }
 
