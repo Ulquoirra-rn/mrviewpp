@@ -157,8 +157,14 @@ namespace MR
         }
 
         tex.gen (gl::TEXTURE_2D, gl::NEAREST);
+#ifdef MRTRIX_WASM
+        // GLES3 requires a sized internal format for float textures.
+        gl::TexImage2D (gl::TEXTURE_2D, 0, gl::RG32F, tex_width, font_height,
+            0, gl::RG, gl::FLOAT, tex_data);
+#else
         gl::TexImage2D (gl::TEXTURE_2D, 0, gl::RG, tex_width, font_height,
             0, gl::RG, gl::FLOAT, tex_data);
+#endif
 
         vertex_buffer[0].gen();
         vertex_buffer[1].gen();

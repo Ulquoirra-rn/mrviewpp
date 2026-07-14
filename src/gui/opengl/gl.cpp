@@ -107,10 +107,12 @@ namespace MR
         if (gl_version == 0) {
           WARN ("unable to determine OpenGL version - operation may be unstable if actual version is less than 3.3");
         }
+#ifndef MRTRIX_WASM
         else if (gl_version < 33) {
           FAIL ("your OpenGL implementation is not sufficient to run MRView - need version 3.3 or higher");
           FAIL ("    operation is likely to be unstable");
         }
+#endif
 /*
         GLenum status = gl::CheckFramebufferStatus (gl::FRAMEBUFFER);
         switch (status) {
