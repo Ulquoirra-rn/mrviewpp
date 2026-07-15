@@ -22,6 +22,14 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QFileDialog>
+#ifdef MRTRIX_WASM
+#include <emscripten.h>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <functional>
+#endif
 
 #include "app.h"
 #include "gui/gui.h"
@@ -100,6 +108,48 @@ namespace MR
 
 
 
+#ifdef MRTRIX_WASM
+
+        // Browser: Qt-wasm's async getOpenFileContent, presented synchronously
+        // (ASYNCIFY spins while the picker runs). The chosen file's bytes are
+        // written into MEMFS so Header::open(path) works unchanged.
+        std::string get_file (QWidget*, const std::string&, const std::string& filter, std::string*)
+        {
+          static std::string picked;
+          static volatile bool done;
+          picked.clear(); done = false;
+          QFileDialog::getOpenFileContent (qstr (filter),
+              [] (const QString& name, const QByteArray& content) {
+                if (!name.isEmpty()) {
+                  QDir().mkpath ("/uploads");
+                  const std::string base = QFileInfo (name).fileName().toStdString();
+                  const std::string path = "/uploads/" + base;
+                  QFile f (qstr (path));
+                  if (f.open (QIODevice::WriteOnly)) { f.write (content); f.close(); picked = path; }
+                }
+                done = true;
+              });
+          while (!done) emscripten_sleep (20);
+          return picked;
+        }
+
+        vector<std::string> get_files (QWidget* parent, const std::string& caption, const std::string& filter, std::string* folder)
+        {
+          vector<std::string> list;
+          const std::string one = get_file (parent, caption, filter, folder);
+          if (one.size()) list.push_back (one);
+          return list;   // browser picker is single-file for now
+        }
+
+        std::string get_folder (QWidget*, const std::string&, std::string*)
+        {
+          QMessageBox::information (QApplication::activeWindow(), "Open folder",
+              "Folder selection is not available in the web version yet.");
+          return std::string();
+        }
+
+#else
+
         std::string get_folder (QWidget* parent, const std::string& caption, std::string* folder)
         {
           QString qstring = QFileDialog::getExistingDirectory (parent, qstr (caption),
@@ -151,6 +201,8 @@ namespace MR
           }
           return list;
         }
+
+#endif // MRTRIX_WASM
 
 
         bool overwrite_files = false;
