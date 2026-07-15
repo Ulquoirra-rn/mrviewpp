@@ -26,7 +26,10 @@ namespace MR
     RAM        RAM_handler;
 #endif
 
+    // Pipe (popen) is unusable in the browser; guarded out of the WASM build.
+#ifndef MRTRIX_WASM
     Pipe          pipe_handler;
+#endif
     MRtrix        mrtrix_handler;
     MRtrix_GZ     mrtrix_gz_handler;
     MRI           mri_handler;
@@ -46,14 +49,18 @@ namespace MR
 #ifdef MRTRIX_PNG_SUPPORT
     PNG           png_handler;
 #endif
+#ifndef MRTRIX_WASM
     MRtrix_sparse mrtrix_sparse_handler;
+#endif
 
 
     const Base* handlers[] = {
 #ifdef MRTRIX_AS_R_LIBRARY
       &RAM_handler,
 #endif
+#ifndef MRTRIX_WASM
       &pipe_handler,
+#endif
       &dicom_handler,
       &mrtrix_handler,
       &mrtrix_gz_handler,
@@ -73,7 +80,9 @@ namespace MR
 #ifdef MRTRIX_PNG_SUPPORT
       &png_handler,
 #endif
+#ifndef MRTRIX_WASM
       &mrtrix_sparse_handler,
+#endif
       nullptr
     };
 

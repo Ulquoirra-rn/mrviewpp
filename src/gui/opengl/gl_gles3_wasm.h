@@ -134,11 +134,13 @@ namespace gl {
   constexpr auto DeleteVertexArrays = ::glDeleteVertexArrays;
   constexpr auto DepthMask = ::glDepthMask;
   constexpr auto DetachShader = ::glDetachShader;
-  constexpr auto Disable = ::glDisable;
+  // MULTISAMPLE/LINE_SMOOTH are not toggleable capabilities in GLES3/WebGL2
+  // (raise INVALID_ENUM); multisampling is fixed at context creation. Skip them.
+  inline void Disable (GLenum cap) { if (cap == MULTISAMPLE || cap == LINE_SMOOTH) return; ::glDisable (cap); }
   constexpr auto DrawArrays = ::glDrawArrays;
   constexpr auto DrawBuffers = ::glDrawBuffers;
   constexpr auto DrawElements = ::glDrawElements;
-  constexpr auto Enable = ::glEnable;
+  inline void Enable (GLenum cap) { if (cap == MULTISAMPLE || cap == LINE_SMOOTH) return; ::glEnable (cap); }
   constexpr auto EnableVertexAttribArray = ::glEnableVertexAttribArray;
   inline void FramebufferTexture(GLenum t,GLenum a,GLuint tex,GLint l){ ::glFramebufferTexture2D(t,a,GL_TEXTURE_2D,tex,l); }
   constexpr auto GenBuffers = ::glGenBuffers;
