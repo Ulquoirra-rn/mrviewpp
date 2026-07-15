@@ -110,36 +110,33 @@ namespace MR
 
 #ifdef MRTRIX_WASM
 
-        // Browser: Qt-wasm's async getOpenFileContent, presented synchronously
-        // (ASYNCIFY spins while the picker runs). The chosen file's bytes are
-        // written into MEMFS so Header::open(path) works unchanged.
-        std::string get_file (QWidget*, const std::string&, const std::string& filter, std::string*)
+        // Async browser file open: Qt-wasm's event loop already uses ASYNCIFY, so
+        // we must NOT block. getOpenFileContent runs the browser picker and fires
+        // the callback later; we write the bytes into MEMFS and hand the caller a
+        // path (empty if cancelled) so Header::open(path) works unchanged.
+        void get_file_async (const std::string& filter, std::function<void(const std::string&)> cb)
         {
-          static std::string picked;
-          static volatile bool done;
-          picked.clear(); done = false;
           QFileDialog::getOpenFileContent (qstr (filter),
-              [] (const QString& name, const QByteArray& content) {
+              [cb] (const QString& name, const QByteArray& content) {
+                std::string path;
                 if (!name.isEmpty()) {
                   QDir().mkpath ("/uploads");
-                  const std::string base = QFileInfo (name).fileName().toStdString();
-                  const std::string path = "/uploads/" + base;
+                  path = "/uploads/" + QFileInfo (name).fileName().toStdString();
                   QFile f (qstr (path));
-                  if (f.open (QIODevice::WriteOnly)) { f.write (content); f.close(); picked = path; }
+                  if (f.open (QIODevice::WriteOnly)) { f.write (content); f.close(); }
+                  else path.clear();
                 }
-                done = true;
+                cb (path);
               });
-          while (!done) emscripten_sleep (20);
-          return picked;
         }
 
-        vector<std::string> get_files (QWidget* parent, const std::string& caption, const std::string& filter, std::string* folder)
-        {
-          vector<std::string> list;
-          const std::string one = get_file (parent, caption, filter, folder);
-          if (one.size()) list.push_back (one);
-          return list;   // browser picker is single-file for now
-        }
+        // Synchronous open is not possible in the browser (would deadlock the
+        // ASYNCIFY event loop); slots use get_file_async instead.
+        std::string get_file (QWidget*, const std::string&, const std::string&, std::string*)
+        { return std::string(); }
+
+        vector<std::string> get_files (QWidget*, const std::string&, const std::string&, std::string*)
+        { return vector<std::string>(); }
 
         std::string get_folder (QWidget*, const std::string&, std::string*)
         {

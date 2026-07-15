@@ -17,6 +17,8 @@
 #ifndef __gui_dialog_file_h__
 #define __gui_dialog_file_h__
 
+#include <functional>
+
 #include "file/path.h"
 #include "gui/opengl/gl.h"
 
@@ -51,6 +53,11 @@ namespace MR
 
         std::string get_folder (QWidget* parent, const std::string& caption, std::string* folder = nullptr);
         std::string get_file (QWidget* parent, const std::string& caption, const std::string& filter = std::string(), std::string* folder = nullptr);
+#ifdef MRTRIX_WASM
+        // Browser: async file open (writes to MEMFS, then cb(path); empty if cancelled).
+        void get_file_async (const std::string& filter, std::function<void(const std::string&)> cb);
+        inline void get_image_async (std::function<void(const std::string&)> cb) { get_file_async (image_filter_string, cb); }
+#endif
         vector<std::string> get_files (QWidget* parent, const std::string& caption, const std::string& filter = std::string(), std::string* folder = nullptr);
         std::string get_save_name (QWidget* parent, const std::string& caption, const std::string& suggested_name = std::string(), const std::string& filter = std::string(), std::string* folder = nullptr);
 

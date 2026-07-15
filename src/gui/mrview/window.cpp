@@ -890,6 +890,21 @@ namespace MR
 
       void Window::image_open_slot ()
       {
+#ifdef MRTRIX_WASM
+        // Browser: async picker; open + add the image inside the callback.
+        Dialog::File::get_image_async ([this] (const std::string& path) {
+          if (path.empty())
+            return;
+          vector<std::unique_ptr<MR::Header>> list;
+          try {
+            list.push_back (make_unique<MR::Header> (MR::Header::open (path)));
+          } catch (Exception& E) {
+            E.display();
+            return;
+          }
+          add_images (list);
+        });
+#else
         vector<std::string> image_list = Dialog::File::get_images (this, "Select images to open", &current_folder);
         if (image_list.empty())
           return;
@@ -904,6 +919,7 @@ namespace MR
           }
         }
         add_images (list);
+#endif
       }
 
 
