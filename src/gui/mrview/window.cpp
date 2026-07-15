@@ -747,6 +747,34 @@ namespace MR
           button->setMenu (menu);
           toolbar->addWidget (button);
 
+#ifdef MRTRIX_WASM
+          // Qt-wasm: every QToolButton popup mode ultimately calls QMenu::exec(),
+          // which spins a nested QEventLoop and re-enters ASYNCIFY, aborting with
+          // "Cannot have multiple async operations in flight" on any menu click.
+          // Intercept the button press and show the menu via non-blocking popup().
+          {
+            struct MenuPopupFilter : QObject {
+              MenuPopupFilter (QObject* p) : QObject (p) {}
+              bool eventFilter (QObject* o, QEvent* e) override {
+                if (e->type() == QEvent::MouseButtonPress) {
+                  if (QToolButton* b = qobject_cast<QToolButton*> (o)) {
+                    if (QMenu* m = b->menu()) {
+                      if (m->isVisible())
+                        m->hide();
+                      else
+                        m->popup (b->mapToGlobal (QPoint (0, b->height())));
+                      return true; // bypass Qt's blocking exec() popup
+                    }
+                  }
+                }
+                return QObject::eventFilter (o, e);
+              }
+            };
+            MenuPopupFilter* filter = new MenuPopupFilter (this);
+            for (QToolButton* b : toolbar->findChildren<QToolButton*>())
+              b->installEventFilter (filter);
+          }
+#endif
 
 
           lighting_ = new GL::Lighting (this);
