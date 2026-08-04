@@ -40,8 +40,8 @@ namespace MR
         // Slice shader for label volumes: the 3D texture holds a compact region
         // index per voxel (sampled nearest-neighbour so indices are never blended),
         // and `lut` is a 1-row RGB palette texture indexed by that region index.
-        // The region matching `highlight` is drawn at full opacity, every other
-        // region at `base_alpha * dim_alpha`.
+        // The regions matching `focus` (crosshair) and `hover` (mouse) are drawn at
+        // full opacity, every other region at `base_alpha * dim_alpha`.
         class Atlas::Shader : public Displayable::Shader
         { NOMEMALIGN
           public:
@@ -63,7 +63,8 @@ namespace MR
               return
                 "uniform sampler3D tex;\n"
                 "uniform sampler2D lut;\n"
-                "uniform int highlight;\n"
+                "uniform int focus;\n"
+                "uniform int hover;\n"
                 "uniform float base_alpha;\n"
                 "uniform float dim_alpha;\n"
                 "in vec3 texcoord;\n"
@@ -76,7 +77,8 @@ namespace MR
                 "  int index = int (v + 0.5);\n"
                 "  if (index <= 0) discard;\n"
                 "  vec3 rgb = texelFetch (lut, ivec2 (index, 0), 0).rgb;\n"
-                "  float a = (index == highlight) ? base_alpha : base_alpha * dim_alpha;\n"
+                "  bool is_active = (index == focus) || (index == hover);\n"
+                "  float a = is_active ? base_alpha : base_alpha * dim_alpha;\n"
                 "  if (a <= 0.0) discard;\n"
                 "  color = vec4 (rgb, a);\n"
                 "}\n";
@@ -91,7 +93,7 @@ namespace MR
 
         // A single loaded atlas: a volume of compact region indices (rendered
         // through Atlas::Shader) plus the label names, per-label centroids and the
-        // index<->label mapping used for cursor read-out and jumping.
+        // index<->label mapping used for the crosshair/hover read-out and jumping.
         //
         // The indices are held in a plain float array owned by this class rather
         // than an MR::Image scratch buffer: MRView::Image reaches its data through
@@ -106,7 +108,8 @@ namespace MR
           public:
             Item (MR::Header&& grid_header, const std::string& label_path, const MR::Connectome::LUT& lut) :
                 ImageBase (std::move (grid_header)),
-                highlight_index (0),
+                focus_index (0),
+                hover_index (0),
                 dim_factor (0.4f),
                 texture_dirty (true)
             {
@@ -263,7 +266,8 @@ namespace MR
 
               gl::Uniform1i (gl::GetUniformLocation (shader, "tex"), 0);
               gl::Uniform1i (gl::GetUniformLocation (shader, "lut"), 1);
-              gl::Uniform1i (gl::GetUniformLocation (shader, "highlight"), int (highlight_index));
+              gl::Uniform1i (gl::GetUniformLocation (shader, "focus"), int (focus_index));
+              gl::Uniform1i (gl::GetUniformLocation (shader, "hover"), int (hover_index));
               gl::Uniform1f (gl::GetUniformLocation (shader, "base_alpha"), alpha);
               gl::Uniform1f (gl::GetUniformLocation (shader, "dim_alpha"), dim_factor);
 
@@ -277,7 +281,8 @@ namespace MR
               shader.stop();
             }
 
-            size_t highlight_index;
+            size_t focus_index;   // ROI under the crosshair: stays active
+            size_t hover_index;    // ROI under the mouse: active while hovered
             float dim_factor;
             std::map<uint32_t, std::string> names;
             std::map<uint32_t, Eigen::Vector3f> centroids;
@@ -412,13 +417,18 @@ namespace MR
           connect (dim_slider, SIGNAL (valueChanged (int)), this, SLOT (dim_slot (int)));
           display_layout->addWidget (dim_slider);
 
-          QGroupBox* region_box = new QGroupBox (tr ("Region under cursor"));
+          QGroupBox* region_box = new QGroupBox (tr ("Active regions"));
           main_box->addWidget (region_box);
           VBoxLayout* region_box_layout = new VBoxLayout;
           region_box->setLayout (region_box_layout);
-          region_label = new QLabel ("—");
-          region_label->setWordWrap (true);
-          region_box_layout->addWidget (region_label);
+          region_box_layout->addWidget (new QLabel (tr ("crosshair:")));
+          focus_region_label = new QLabel ("—");
+          focus_region_label->setWordWrap (true);
+          region_box_layout->addWidget (focus_region_label);
+          region_box_layout->addWidget (new QLabel (tr ("hover:")));
+          hover_region_label = new QLabel ("—");
+          hover_region_label->setWordWrap (true);
+          region_box_layout->addWidget (hover_region_label);
 
           QGroupBox* list_box = new QGroupBox (tr ("Regions (double-click to jump)"));
           main_box->addWidget (list_box, 1);
@@ -525,7 +535,7 @@ namespace MR
             indexes = atlas_list_view->selectionModel()->selectedIndexes();
           }
           populate_region_list();
-          update_region_label();
+          update_region_labels();
           window().updateGL();
         }
 
@@ -549,7 +559,7 @@ namespace MR
         void Atlas::selection_changed_slot (const QItemSelection&, const QItemSelection&)
         {
           populate_region_list();
-          update_region_label();
+          update_region_labels();
         }
 
 
@@ -584,10 +594,10 @@ namespace MR
         {
           Item* atlas = current_item();
           if (!atlas) {
-            update_region_label();
+            update_region_labels();
             return;
           }
-          set_highlight (atlas->region_index_at (window().focus()));
+          set_focus_region (atlas->region_index_at (window().focus()));
         }
 
 
@@ -601,23 +611,49 @@ namespace MR
           if (!mode)
             return;
           const Projection* proj = mode->get_current_projection();
-          if (!proj)
+          if (!proj) {
+            set_hover_region (0);
             return;
-          set_highlight (atlas->region_index_at (
+          }
+          set_hover_region (atlas->region_index_at (
                 proj->screen_to_model (window().mouse_position(), window().focus())));
         }
 
 
 
-        void Atlas::set_highlight (size_t index)
+        // The crosshair region stays active until the focus moves; hovering another
+        // region lights that one up as well rather than replacing it.
+        void Atlas::set_focus_region (size_t index)
         {
           Item* atlas = current_item();
-          if (!atlas || atlas->highlight_index == index)
+          if (!atlas || atlas->focus_index == index)
             return;
-          atlas->highlight_index = index;
-          update_region_label();
+          atlas->focus_index = index;
+          update_region_labels();
+          select_in_region_list (index);
+          window().updateGL();
+        }
 
-          // mirror the highlight in the region list without re-triggering it
+
+
+        void Atlas::set_hover_region (size_t index)
+        {
+          Item* atlas = current_item();
+          if (!atlas || atlas->hover_index == index)
+            return;
+          atlas->hover_index = index;
+          update_region_labels();
+          window().updateGL();
+        }
+
+
+
+        void Atlas::select_in_region_list (size_t index)
+        {
+          Item* atlas = current_item();
+          if (!atlas)
+            return;
+          // mirror the selection in the region list without re-triggering it
           syncing_region_list = true;
           if (!index) {
             region_list->setCurrentItem (nullptr);
@@ -632,27 +668,31 @@ namespace MR
             }
           }
           syncing_region_list = false;
-
-          window().updateGL();
         }
 
 
 
-        void Atlas::update_region_label ()
+        QString Atlas::describe_region (size_t index)
         {
           Item* atlas = current_item();
-          if (!atlas || !atlas->highlight_index) {
-            region_label->setText ("—");
-            return;
-          }
-          const size_t index = atlas->highlight_index;
+          if (!atlas || !index)
+            return QString ("—");
           const uint32_t label = atlas->label_of (index);
           const auto rgb = atlas->colour_of_index (index);
           const QColor colour (int (rgb[0]*255.0f), int (rgb[1]*255.0f), int (rgb[2]*255.0f));
-          region_label->setText (QString ("<b>%1</b><br/><span style=\"color:%2\">&#9632;</span> label %3")
-              .arg (qstr (atlas->name_of_label (label)).toHtmlEscaped())
+          return QString ("<span style=\"color:%1\">&#9632;</span> <b>%2</b> [%3]")
               .arg (colour.name())
-              .arg (label));
+              .arg (qstr (atlas->name_of_label (label)).toHtmlEscaped())
+              .arg (label);
+        }
+
+
+
+        void Atlas::update_region_labels ()
+        {
+          Item* atlas = current_item();
+          focus_region_label->setText (describe_region (atlas ? atlas->focus_index : 0));
+          hover_region_label->setText (describe_region (atlas ? atlas->hover_index : 0));
         }
 
 
@@ -681,7 +721,7 @@ namespace MR
           Item* atlas = current_item();
           if (!atlas)
             return;
-          set_highlight (atlas->index_of (uint32_t (item->data (Qt::UserRole).toUInt())));
+          set_focus_region (atlas->index_of (uint32_t (item->data (Qt::UserRole).toUInt())));
         }
 
 
@@ -735,7 +775,7 @@ namespace MR
                 atlas_list_model->index (atlas_list_model->rowCount()-1, 0),
                 QItemSelectionModel::ClearAndSelect);
           populate_region_list();
-          update_region_label();
+          update_region_labels();
         }
 
 
@@ -750,7 +790,7 @@ namespace MR
             +   Argument ("labels").type_image_in()
             +   Argument ("lut").type_file_in()
 
-            + Option ("atlas.opacity", "Set the opacity of the region under the cursor [0-1].").allow_multiple()
+            + Option ("atlas.opacity", "Set the opacity of the active (crosshair / hovered) regions [0-1].").allow_multiple()
             +   Argument ("value").type_float (0.0, 1.0)
 
             + Option ("atlas.dim", "Set the opacity of all other regions, relative to atlas.opacity [0-1].").allow_multiple()

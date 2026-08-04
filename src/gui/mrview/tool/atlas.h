@@ -30,16 +30,16 @@ namespace MR
 
         // Atlas tool: load an integer label volume + a lookup table (LUT), give
         // every region its own flat LUT colour, and read out the region name under
-        // the cursor. A region list allows jumping to a region's centroid.
+        // the crosshair. A region list allows jumping to a region's centroid.
         //
         // Rendering does not reuse mrview's intensity-windowed colourmaps (those
         // interpolate between labels and produce garbage at region boundaries).
-        // Instead the label volume is baked into a scratch volume of *compact
-        // region indices*, uploaded as a nearest-neighbour-sampled R32F 3D
-        // texture, and a dedicated shader looks each index up in a small RGB
-        // palette texture. That keeps every region a solid colour and lets the
-        // shader give the region under the cursor full opacity while the rest are
-        // dimmed, which is what the niivue atlas view does.
+        // Instead the label volume is converted to *compact region indices*,
+        // uploaded as a nearest-neighbour-sampled R32F 3D texture, and a dedicated
+        // shader looks each index up in a small RGB palette texture. That keeps
+        // every region a solid colour and lets the shader give the crosshair and
+        // hovered regions full opacity while the rest are dimmed, which is what the
+        // niivue atlas view does.
         class Atlas : public Base
         { MEMALIGN(Atlas)
             Q_OBJECT
@@ -80,16 +80,20 @@ namespace MR
             QPushButton* hide_all_button;
             QSlider* opacity_slider;
             QSlider* dim_slider;
-            QLabel* region_label;
+            QLabel* focus_region_label;
+            QLabel* hover_region_label;
             QListWidget* region_list;
             bool syncing_region_list;
 
             Item* current_item ();
             void populate_region_list ();
-            // Set the highlighted (fully opaque) region by its compact index;
-            // updates the read-out label and the region list selection.
-            void set_highlight (size_t index);
-            void update_region_label ();
+            // Both the crosshair region and the region under the mouse are drawn
+            // fully opaque; the crosshair one persists until the focus moves.
+            void set_focus_region (size_t index);
+            void set_hover_region (size_t index);
+            void select_in_region_list (size_t index);
+            QString describe_region (size_t index);
+            void update_region_labels ();
             void dropEvent (QDropEvent* event) override;
         };
 
