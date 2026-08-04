@@ -1811,6 +1811,7 @@ namespace MR
           if (tool_has_focus)
             if (tool_has_focus->mouse_move_event())
               event->accept();
+          emit hoverChanged();
           return;
         }
 

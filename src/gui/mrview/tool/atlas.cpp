@@ -19,12 +19,10 @@
 #include "header.h"
 #include "image.h"
 #include "transform.h"
-#include "colourmap.h"
 #include "connectome/lut.h"
 
 #include "gui/mrview/window.h"
 #include "gui/mrview/mode/base.h"
-#include "gui/mrview/mode/slice.h"
 #include "gui/mrview/gui_image.h"
 #include "gui/mrview/tool/atlas.h"
 #include "gui/mrview/tool/list_model_base.h"
@@ -39,86 +37,279 @@ namespace MR
       namespace Tool
       {
 
-        // A single loaded atlas: a scratch RGB volume (one colour per label,
-        // displayed through mrview's RGB slice renderer) plus the retained label
-        // image + names + per-label centroids for cursor read-out and jumping.
-        class Atlas::Item : public Image
+        // Slice shader for label volumes: the 3D texture holds a compact region
+        // index per voxel (sampled nearest-neighbour so indices are never blended),
+        // and `lut` is a 1-row RGB palette texture indexed by that region index.
+        // The region matching `highlight` is drawn at full opacity, every other
+        // region at `base_alpha * dim_alpha`.
+        class Atlas::Shader : public Displayable::Shader
+        { NOMEMALIGN
+          public:
+            std::string vertex_shader_source (const Displayable&) override
+            {
+              return
+                "layout(location = 0) in vec3 vertpos;\n"
+                "layout(location = 1) in vec3 texpos;\n"
+                "uniform mat4 MVP;\n"
+                "out vec3 texcoord;\n"
+                "void main() {\n"
+                "  gl_Position = MVP * vec4 (vertpos, 1);\n"
+                "  texcoord = texpos;\n"
+                "}\n";
+            }
+
+            std::string fragment_shader_source (const Displayable&) override
+            {
+              return
+                "uniform sampler3D tex;\n"
+                "uniform sampler2D lut;\n"
+                "uniform int highlight;\n"
+                "uniform float base_alpha;\n"
+                "uniform float dim_alpha;\n"
+                "in vec3 texcoord;\n"
+                "out vec4 color;\n"
+                "void main() {\n"
+                "  if (texcoord.s < 0.0 || texcoord.s > 1.0 ||\n"
+                "      texcoord.t < 0.0 || texcoord.t > 1.0 ||\n"
+                "      texcoord.p < 0.0 || texcoord.p > 1.0) discard;\n"
+                "  float v = texture (tex, texcoord.stp).r;\n"
+                "  int index = int (v + 0.5);\n"
+                "  if (index <= 0) discard;\n"
+                "  vec3 rgb = texelFetch (lut, ivec2 (index, 0), 0).rgb;\n"
+                "  float a = (index == highlight) ? base_alpha : base_alpha * dim_alpha;\n"
+                "  if (a <= 0.0) discard;\n"
+                "  color = vec4 (rgb, a);\n"
+                "}\n";
+            }
+
+            // The source above depends on nothing that can change at runtime, so
+            // the program only ever needs compiling once.
+            bool need_update (const Displayable&) const override { return false; }
+        };
+
+
+
+        // A single loaded atlas: a volume of compact region indices (rendered
+        // through Atlas::Shader) plus the label names, per-label centroids and the
+        // index<->label mapping used for cursor read-out and jumping.
+        //
+        // The indices are held in a plain float array owned by this class rather
+        // than an MR::Image scratch buffer: MRView::Image reaches its data through
+        // MR::Image<cfloat>, and Image<>::Buffer::get_data_pointer() hands back the
+        // raw pointer for *any* scratch image without checking the datatype, so
+        // writing through such an accessor stores 8-byte complex values into a
+        // 4-byte float buffer (every other voxel, and 2x past the end of the
+        // allocation). Owning the array also halves the memory and skips a copy on
+        // texture upload.
+        class Atlas::Item : public ImageBase
         { MEMALIGN(Atlas::Item)
           public:
-            Item (MR::Header&& rgb_header, const std::string& label_path, const MR::Connectome::LUT& lut) :
-                Image (std::move (rgb_header))
+            Item (MR::Header&& grid_header, const std::string& label_path, const MR::Connectome::LUT& lut) :
+                ImageBase (std::move (grid_header)),
+                highlight_index (0),
+                dim_factor (0.4f),
+                texture_dirty (true)
             {
               auto labels_img = MR::Image<float>::open (label_path);
               const MR::Transform T (labels_img);
-              scanner2voxel = T.scanner2voxel;
 
-              std::map<uint32_t, std::array<float,3>> colours;
+              std::map<uint32_t, std::array<float,3>> lut_colours;
               for (const auto& entry : lut) {
-                const uint32_t idx = entry.first;
-                names[idx] = entry.second.get_name();
+                const uint32_t label = entry.first;
+                names[label] = entry.second.get_name();
                 const auto& c = entry.second.get_colour();
-                colours[idx] = { c[0]/255.0f, c[1]/255.0f, c[2]/255.0f };
+                lut_colours[label] = { c[0]/255.0f, c[1]/255.0f, c[2]/255.0f };
               }
 
-              const ssize_t nx = labels_img.size(0), ny = labels_img.size(1), nz = labels_img.size(2);
+              // Index 0 is background; its palette entry is never sampled.
+              index_to_label.push_back (0);
+              palette.assign (4, 0.0f);
+
               std::map<uint32_t, std::pair<Eigen::Vector3d, size_t>> accum;
 
-              for (ssize_t z = 0; z != nz; ++z) { labels_img.index(2) = z; image.index(2) = z;
-                for (ssize_t y = 0; y != ny; ++y) { labels_img.index(1) = y; image.index(1) = y;
-                  for (ssize_t x = 0; x != nx; ++x) { labels_img.index(0) = x; image.index(0) = x;
-                    const uint32_t lab = uint32_t (std::round (labels_img.value()));
-                    std::array<float,3> rgb { 0.0f, 0.0f, 0.0f };
-                    if (lab != 0) {
-                      const auto it = colours.find (lab);
-                      if (it != colours.end())
-                        rgb = it->second;
-                      else  // label with no LUT entry: deterministic visible colour
-                        rgb = { ((lab*97)%256)/255.0f, ((lab*57)%256)/255.0f, ((lab*131)%256)/255.0f };
-                      auto& a = accum[lab];
-                      a.first += T.voxel2scanner * Eigen::Vector3d (x, y, z);
-                      a.second += 1;
+              const ssize_t nx = header().size(0), ny = header().size(1), nz = header().size(2);
+              indices.assign (nx*ny*nz, 0.0f);
+
+              for (ssize_t z = 0; z != nz; ++z) { labels_img.index(2) = z;
+                for (ssize_t y = 0; y != ny; ++y) { labels_img.index(1) = y;
+                  for (ssize_t x = 0; x != nx; ++x) { labels_img.index(0) = x;
+                    const float raw = labels_img.value();
+                    if (!std::isfinite (raw) || raw < 0.5f)
+                      continue;
+                    const uint32_t label = uint32_t (std::round (raw));
+                    size_t index;
+                    const auto it = label_to_index.find (label);
+                    if (it != label_to_index.end()) {
+                      index = it->second;
+                    } else {
+                      index = index_to_label.size();
+                      label_to_index[label] = index;
+                      index_to_label.push_back (label);
+                      const auto c = lut_colours.find (label);
+                      // labels absent from the LUT get a deterministic visible colour
+                      const std::array<float,3> rgb = c != lut_colours.end() ? c->second
+                        : std::array<float,3> { ((label*97)%256)/255.0f, ((label*57)%256)/255.0f, ((label*131)%256)/255.0f };
+                      palette.push_back (rgb[0]);
+                      palette.push_back (rgb[1]);
+                      palette.push_back (rgb[2]);
+                      palette.push_back (1.0f);
                     }
-                    for (ssize_t c = 0; c != 3; ++c) {
-                      image.index(3) = c;
-                      image.value() = cfloat (rgb[c], 0.0f);
-                    }
+                    indices[x + nx*(y + ny*z)] = float (index);
+                    auto& a = accum[label];
+                    a.first += T.voxel2scanner * Eigen::Vector3d (x, y, z);
+                    a.second += 1;
                   }
                 }
               }
-              image.index(3) = 0;
 
               for (const auto& kv : accum) {
                 if (kv.second.second)
                   centroids[kv.first] = (kv.second.first / double (kv.second.second)).cast<float>();
               }
 
-              labels = std::move (labels_img);
+              set_interpolate (false);
+              value_min = 0.0f;
+              value_max = float (index_to_label.size());
+              min_max_set();
+              alpha = 1.0f;
             }
 
-            // Region name at a scanner-space point (empty if outside / background).
-            std::string region_at (const Eigen::Vector3f& world)
+            ~Item () {
+              GL::Context::Grab context;
+              lut_texture.clear();
+              shader.clear();
+            }
+
+            void update_texture3D () override
             {
-              const Eigen::Vector3d v = scanner2voxel * world.cast<double>();
-              const ssize_t ix = std::lround (v[0]), iy = std::lround (v[1]), iz = std::lround (v[2]);
-              if (ix < 0 || iy < 0 || iz < 0 ||
-                  ix >= labels.size(0) || iy >= labels.size(1) || iz >= labels.size(2))
-                return std::string();
-              labels.index(0) = ix; labels.index(1) = iy; labels.index(2) = iz;
-              const uint32_t lab = uint32_t (std::round (labels.value()));
-              if (!lab)
-                return std::string();
-              const auto it = names.find (lab);
-              return it == names.end() ? ("label " + str(lab)) : it->second;
+              bind();
+              if (!texture_dirty)
+                return;
+              format = gl::RED;
+              internal_format = gl::R32F;
+              type = gl::FLOAT;
+              allocate();
+              value_min = 0.0f;
+              value_max = float (index_to_label.size());
+              min_max_set();
+              upload_data ({ { 0, 0, 0 } },
+                           { { header().size(0), header().size(1), header().size(2) } },
+                           indices.data());
+              texture_dirty = false;
             }
 
-            Mode::Slice::Shader slice_shader;
+            // Never used: the atlas is always drawn through render_atlas() below,
+            // which goes via the 3D texture. Implemented rather than asserted so
+            // that an inherited render2D() call cannot corrupt GL state.
+            void update_texture2D (const int plane, const int slice) override
+            {
+              if (!texture2D[plane])
+                texture2D[plane].gen (gl::TEXTURE_3D);
+              texture2D[plane].bind();
+              gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+              texture2D[plane].set_interp (interpolation);
+              if (tex_positions[plane] == slice)
+                return;
+              tex_positions[plane] = slice;
+
+              int x, y;
+              get_axes (plane, x, y);
+              const ssize_t xsize = header().size(x), ysize = header().size(y);
+              vector<float> data (xsize*ysize, 0.0f);
+              if (slice >= 0 && slice < header().size (plane)) {
+                std::array<ssize_t,3> v;
+                v[plane] = slice;
+                for (v[y] = 0; v[y] != ysize; ++v[y])
+                  for (v[x] = 0; v[x] != xsize; ++v[x])
+                    data[v[x] + v[y]*xsize] = index_at_voxel (v[0], v[1], v[2]);
+              }
+              gl::TexImage3D (gl::TEXTURE_3D, 0, gl::R32F, xsize, ysize, 1, 0, gl::RED, gl::FLOAT, data.data());
+            }
+
+            // Compact region index at a scanner-space point (0 = outside / background).
+            size_t region_index_at (const Eigen::Vector3f& world) const
+            {
+              const Eigen::Vector3f v = scanner2voxel() * world;
+              return size_t (index_at_voxel (std::lround (v[0]), std::lround (v[1]), std::lround (v[2])));
+            }
+
+            uint32_t label_of (size_t index) const {
+              return index < index_to_label.size() ? index_to_label[index] : 0;
+            }
+
+            size_t index_of (uint32_t label) const {
+              const auto it = label_to_index.find (label);
+              return it == label_to_index.end() ? 0 : it->second;
+            }
+
+            std::string name_of_label (uint32_t label) const {
+              const auto it = names.find (label);
+              return it == names.end() ? ("label " + str(label)) : it->second;
+            }
+
+            std::array<float,3> colour_of_index (size_t index) const {
+              if (!index || 4*index+2 >= palette.size())
+                return { 0.0f, 0.0f, 0.0f };
+              return { palette[4*index], palette[4*index+1], palette[4*index+2] };
+            }
+
+            void render_atlas (const Projection& projection, float depth)
+            {
+              update_texture3D();
+              update_lut_texture();
+
+              shader.start (*this);
+              projection.set (shader);
+
+              gl::Uniform1i (gl::GetUniformLocation (shader, "tex"), 0);
+              gl::Uniform1i (gl::GetUniformLocation (shader, "lut"), 1);
+              gl::Uniform1i (gl::GetUniformLocation (shader, "highlight"), int (highlight_index));
+              gl::Uniform1f (gl::GetUniformLocation (shader, "base_alpha"), alpha);
+              gl::Uniform1f (gl::GetUniformLocation (shader, "dim_alpha"), dim_factor);
+
+              gl::ActiveTexture (gl::TEXTURE1);
+              lut_texture.bind();
+              gl::ActiveTexture (gl::TEXTURE0);
+              texture().bind();
+
+              set_vertices_for_slice_render (projection, depth);
+              draw_vertices();
+              shader.stop();
+            }
+
+            size_t highlight_index;
+            float dim_factor;
             std::map<uint32_t, std::string> names;
             std::map<uint32_t, Eigen::Vector3f> centroids;
             std::string label_path, lut_path;   // retained for session save
 
           private:
-            MR::Image<float> labels;
-            transform_type scanner2voxel;
+            void update_lut_texture ()
+            {
+              if (lut_texture)
+                return;
+              lut_texture.gen (gl::TEXTURE_2D, gl::NEAREST);
+              lut_texture.bind();
+              gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
+              gl::TexImage2D (gl::TEXTURE_2D, 0, gl::RGBA32F,
+                  GLsizei (palette.size()/4), 1, 0, gl::RGBA, gl::FLOAT, palette.data());
+            }
+
+            float index_at_voxel (ssize_t x, ssize_t y, ssize_t z) const
+            {
+              if (x < 0 || y < 0 || z < 0 ||
+                  x >= header().size(0) || y >= header().size(1) || z >= header().size(2))
+                return 0.0f;
+              return indices[x + header().size(0)*(y + header().size(1)*z)];
+            }
+
+            Atlas::Shader shader;
+            GL::Texture lut_texture;
+            vector<float> indices;              // compact region index per voxel, x fastest
+            vector<float> palette;              // RGBA per compact index, row-major
+            vector<uint32_t> index_to_label;
+            std::map<uint32_t, size_t> label_to_index;
+            bool texture_dirty;
         };
 
 
@@ -132,26 +323,16 @@ namespace MR
               Item* item = nullptr;
               try {
                 MR::Connectome::LUT lut (lut_path);
-                MR::Header label_hdr = MR::Header::open (label_path);
-                MR::Header rgb (label_hdr);
-                rgb.ndim() = 4;
-                rgb.size(3) = 3;
-                rgb.spacing(3) = 1.0;
-                rgb.stride(3) = 4;
-                rgb.datatype() = MR::DataType::Float32;
-                rgb.datatype().set_byte_order_native();
-                MR::Header scratch = MR::Header::scratch (rgb, "atlas RGB");
+                MR::Header grid_hdr = MR::Header::open (label_path);
+                grid_hdr.ndim() = 3;
 
-                item = new Item (std::move (scratch), label_path, lut);
+                item = new Item (std::move (grid_hdr), label_path, lut);
                 item->label_path = label_path;
                 item->lut_path = lut_path;
-                item->set_allowed_features (true, true, false);
-                item->set_colourmap (ColourMap::index ("RGB"));
-                item->set_use_transparency (true);
-                item->alpha = 0.5f;
-                item->set_windowing (0.0f, 1.0f);
-                item->transparent_intensity = 0.001f;
-                item->opaque_intensity = 0.05f;
+                // Colours come from the palette texture, not from a colourmap, and
+                // opacity is decided per region in the shader; none of mrview's
+                // intensity windowing / thresholding applies here.
+                item->set_allowed_features (false, false, false);
                 item->show = true;
 
                 beginInsertRows (QModelIndex(), items.size(), items.size());
@@ -171,7 +352,8 @@ namespace MR
 
 
         Atlas::Atlas (Dock* parent) :
-            Base (parent)
+            Base (parent),
+            syncing_region_list (false)
         {
           VBoxLayout* main_box = new VBoxLayout (this);
 
@@ -217,12 +399,18 @@ namespace MR
           main_box->addWidget (display_box);
           VBoxLayout* display_layout = new VBoxLayout;
           display_box->setLayout (display_layout);
-          display_layout->addWidget (new QLabel (tr ("opacity")));
+          display_layout->addWidget (new QLabel (tr ("selected region opacity")));
           opacity_slider = new QSlider (Qt::Horizontal);
           opacity_slider->setRange (0, 1000);
-          opacity_slider->setSliderPosition (500);
+          opacity_slider->setSliderPosition (1000);
           connect (opacity_slider, SIGNAL (valueChanged (int)), this, SLOT (opacity_slot (int)));
           display_layout->addWidget (opacity_slider);
+          display_layout->addWidget (new QLabel (tr ("other regions opacity")));
+          dim_slider = new QSlider (Qt::Horizontal);
+          dim_slider->setRange (0, 1000);
+          dim_slider->setSliderPosition (400);
+          connect (dim_slider, SIGNAL (valueChanged (int)), this, SLOT (dim_slot (int)));
+          display_layout->addWidget (dim_slider);
 
           QGroupBox* region_box = new QGroupBox (tr ("Region under cursor"));
           main_box->addWidget (region_box);
@@ -241,6 +429,8 @@ namespace MR
                    this, SLOT (region_activated_slot (QListWidgetItem*)));
           connect (region_list, SIGNAL (itemDoubleClicked (QListWidgetItem*)),
                    this, SLOT (region_activated_slot (QListWidgetItem*)));
+          connect (region_list, SIGNAL (currentItemChanged (QListWidgetItem*, QListWidgetItem*)),
+                   this, SLOT (region_highlight_slot (QListWidgetItem*, QListWidgetItem*)));
           list_box_layout->addWidget (region_list);
 
           HBoxLayout* checkall_layout = new HBoxLayout;
@@ -257,6 +447,7 @@ namespace MR
           main_box->addLayout (checkall_layout, 0);
 
           connect (&window(), SIGNAL (focusChanged()), this, SLOT (focus_changed_slot ()));
+          connect (&window(), SIGNAL (hoverChanged()), this, SLOT (hover_changed_slot ()));
         }
 
 
@@ -275,31 +466,31 @@ namespace MR
 
         void Atlas::draw (const Projection& projection, bool is_3D, int, int)
         {
+          // The label-index/palette shader has no counterpart in the 3D volume
+          // renderer (which composites overlays through the intensity colourmaps),
+          // so the atlas is drawn in slice modes only.
+          if (is_3D)
+            return;
+
           GL::assert_context_is_current();
-          if (!is_3D) {
-            gl::Enable (gl::BLEND);
-            gl::Disable (gl::DEPTH_TEST);
-            gl::DepthMask (gl::FALSE_);
-            gl::ColorMask (gl::TRUE_, gl::TRUE_, gl::TRUE_, gl::TRUE_);
-            gl::BlendFunc (gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::BlendEquation (gl::FUNC_ADD);
-          }
+          gl::Enable (gl::BLEND);
+          gl::Disable (gl::DEPTH_TEST);
+          gl::DepthMask (gl::FALSE_);
+          gl::ColorMask (gl::TRUE_, gl::TRUE_, gl::TRUE_, gl::TRUE_);
+          gl::BlendFunc (gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+          gl::BlendEquation (gl::FUNC_ADD);
 
           for (int i = 0; i < atlas_list_model->rowCount(); ++i) {
             if (atlas_list_model->items[i]->show && !hide_all_button->isChecked()) {
               Item* atlas = dynamic_cast<Item*> (atlas_list_model->items[i].get());
-              if (is_3D)
-                window().get_current_mode()->overlays_for_3D.push_back (atlas);
-              else
-                atlas->render3D (atlas->slice_shader, projection, projection.depth_of (window().focus()));
+              if (atlas)
+                atlas->render_atlas (projection, projection.depth_of (window().focus()));
             }
           }
 
-          if (!is_3D) {
-            gl::Disable (gl::BLEND);
-            gl::Enable (gl::DEPTH_TEST);
-            gl::DepthMask (gl::TRUE_);
-          }
+          gl::Disable (gl::BLEND);
+          gl::Enable (gl::DEPTH_TEST);
+          gl::DepthMask (gl::TRUE_);
           GL::assert_context_is_current();
         }
 
@@ -320,6 +511,7 @@ namespace MR
               atlas_list_model->index (atlas_list_model->rowCount()-1, 0),
               QItemSelectionModel::ClearAndSelect);
           populate_region_list();
+          focus_changed_slot();
           window().updateGL();
         }
 
@@ -333,6 +525,7 @@ namespace MR
             indexes = atlas_list_view->selectionModel()->selectedIndexes();
           }
           populate_region_list();
+          update_region_label();
           window().updateGL();
         }
 
@@ -356,6 +549,7 @@ namespace MR
         void Atlas::selection_changed_slot (const QItemSelection&, const QItemSelection&)
         {
           populate_region_list();
+          update_region_label();
         }
 
 
@@ -373,15 +567,92 @@ namespace MR
 
 
 
+        void Atlas::dim_slot (int value)
+        {
+          const float dim = value / 1000.0f;
+          for (size_t i = 0; i < atlas_list_model->items.size(); ++i) {
+            Item* atlas = dynamic_cast<Item*> (atlas_list_model->items[i].get());
+            if (atlas)
+              atlas->dim_factor = dim;
+          }
+          window().updateGL();
+        }
+
+
+
         void Atlas::focus_changed_slot ()
         {
           Item* atlas = current_item();
           if (!atlas) {
+            update_region_label();
+            return;
+          }
+          set_highlight (atlas->region_index_at (window().focus()));
+        }
+
+
+
+        void Atlas::hover_changed_slot ()
+        {
+          Item* atlas = current_item();
+          if (!atlas)
+            return;
+          Mode::Base* mode = window().get_current_mode();
+          if (!mode)
+            return;
+          const Projection* proj = mode->get_current_projection();
+          if (!proj)
+            return;
+          set_highlight (atlas->region_index_at (
+                proj->screen_to_model (window().mouse_position(), window().focus())));
+        }
+
+
+
+        void Atlas::set_highlight (size_t index)
+        {
+          Item* atlas = current_item();
+          if (!atlas || atlas->highlight_index == index)
+            return;
+          atlas->highlight_index = index;
+          update_region_label();
+
+          // mirror the highlight in the region list without re-triggering it
+          syncing_region_list = true;
+          if (!index) {
+            region_list->setCurrentItem (nullptr);
+          } else {
+            const uint32_t label = atlas->label_of (index);
+            for (int i = 0; i != region_list->count(); ++i) {
+              if (region_list->item(i)->data (Qt::UserRole).toUInt() == label) {
+                region_list->setCurrentRow (i);
+                region_list->scrollToItem (region_list->item(i));
+                break;
+              }
+            }
+          }
+          syncing_region_list = false;
+
+          window().updateGL();
+        }
+
+
+
+        void Atlas::update_region_label ()
+        {
+          Item* atlas = current_item();
+          if (!atlas || !atlas->highlight_index) {
             region_label->setText ("—");
             return;
           }
-          const std::string name = atlas->region_at (window().focus());
-          region_label->setText (name.empty() ? "—" : qstr (name));
+          const size_t index = atlas->highlight_index;
+          const uint32_t label = atlas->label_of (index);
+          const auto rgb = atlas->colour_of_index (index);
+          const QColor colour (int (rgb[0]*255.0f), int (rgb[1]*255.0f), int (rgb[2]*255.0f));
+          region_label->setText (QString ("<b>%1</b><br/><span style=\"color:%2\">&#9632;</span> label %3")
+              .arg (qstr (atlas->name_of_label (label)).toHtmlEscaped())
+              .arg (colour.name())
+              .arg (label));
         }
 
 
@@ -393,8 +664,8 @@ namespace MR
           Item* atlas = current_item();
           if (!atlas)
             return;
-          const uint32_t lab = uint32_t (item->data (Qt::UserRole).toUInt());
-          const auto it = atlas->centroids.find (lab);
+          const uint32_t label = uint32_t (item->data (Qt::UserRole).toUInt());
+          const auto it = atlas->centroids.find (label);
           if (it == atlas->centroids.end())
             return;
           window().set_focus (it->second);
@@ -403,20 +674,36 @@ namespace MR
 
 
 
-        void Atlas::populate_region_list ()
+        void Atlas::region_highlight_slot (QListWidgetItem* item, QListWidgetItem*)
         {
-          region_list->clear();
+          if (syncing_region_list || !item)
+            return;
           Item* atlas = current_item();
           if (!atlas)
             return;
-          // Only list regions actually present in the volume (those with a centroid).
-          for (const auto& kv : atlas->centroids) {
-            const uint32_t lab = kv.first;
-            const auto it = atlas->names.find (lab);
-            const std::string name = it == atlas->names.end() ? ("label " + str(lab)) : it->second;
-            QListWidgetItem* qitem = new QListWidgetItem (qstr (name), region_list);
-            qitem->setData (Qt::UserRole, QVariant (uint (lab)));
+          set_highlight (atlas->index_of (uint32_t (item->data (Qt::UserRole).toUInt())));
+        }
+
+
+
+        void Atlas::populate_region_list ()
+        {
+          syncing_region_list = true;
+          region_list->clear();
+          Item* atlas = current_item();
+          if (atlas) {
+            // Only list regions actually present in the volume (those with a centroid).
+            for (const auto& kv : atlas->centroids) {
+              const uint32_t label = kv.first;
+              QListWidgetItem* qitem = new QListWidgetItem (qstr (atlas->name_of_label (label)), region_list);
+              qitem->setData (Qt::UserRole, QVariant (uint (label)));
+              const auto rgb = atlas->colour_of_index (atlas->index_of (label));
+              QPixmap swatch (12, 12);
+              swatch.fill (QColor (int (rgb[0]*255.0f), int (rgb[1]*255.0f), int (rgb[2]*255.0f)));
+              qitem->setIcon (QIcon (swatch));
+            }
           }
+          syncing_region_list = false;
         }
 
 
@@ -448,6 +735,54 @@ namespace MR
                 atlas_list_model->index (atlas_list_model->rowCount()-1, 0),
                 QItemSelectionModel::ClearAndSelect);
           populate_region_list();
+          update_region_label();
+        }
+
+
+
+        void Atlas::add_commandline_options (MR::App::OptionList& options)
+        {
+          using namespace MR::App;
+          options
+            + OptionGroup ("Atlas tool options")
+
+            + Option ("atlas.load", "Load an atlas: a label volume and its lookup table.").allow_multiple()
+            +   Argument ("labels").type_image_in()
+            +   Argument ("lut").type_file_in()
+
+            + Option ("atlas.opacity", "Set the opacity of the region under the cursor [0-1].").allow_multiple()
+            +   Argument ("value").type_float (0.0, 1.0)
+
+            + Option ("atlas.dim", "Set the opacity of all other regions, relative to atlas.opacity [0-1].").allow_multiple()
+            +   Argument ("value").type_float (0.0, 1.0);
+        }
+
+
+
+        bool Atlas::process_commandline_option (const MR::App::ParsedOption& opt)
+        {
+          if (opt.opt->is ("atlas.load")) {
+            atlas_list_model->add_item (std::string (opt[0]), std::string (opt[1]));
+            atlas_list_view->selectionModel()->select (
+                atlas_list_model->index (atlas_list_model->rowCount()-1, 0),
+                QItemSelectionModel::ClearAndSelect);
+            populate_region_list();
+            focus_changed_slot();
+            window().updateGL();
+            return true;
+          }
+
+          if (opt.opt->is ("atlas.opacity")) {
+            opacity_slider->setSliderPosition (int (1.0e3f * float (opt[0])));
+            return true;
+          }
+
+          if (opt.opt->is ("atlas.dim")) {
+            dim_slider->setSliderPosition (int (1.0e3f * float (opt[0])));
+            return true;
+          }
+
+          return false;
         }
 
 

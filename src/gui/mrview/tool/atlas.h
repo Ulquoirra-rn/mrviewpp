@@ -28,14 +28,18 @@ namespace MR
       namespace Tool
       {
 
-        // Atlas tool: load an integer label volume + a lookup table (LUT), colour
-        // each region with its LUT colour, and read out the region name under the
-        // crosshair. A region list allows jumping to a region's centroid.
+        // Atlas tool: load an integer label volume + a lookup table (LUT), give
+        // every region its own flat LUT colour, and read out the region name under
+        // the cursor. A region list allows jumping to a region's centroid.
         //
-        // Coloured display reuses mrview's existing RGB-volume slice renderer: the
-        // label image is baked into a scratch RGB volume (one colour per label) at
-        // load time, so no new slice shader is needed. The original label image and
-        // LUT are retained for name lookup at the focus point.
+        // Rendering does not reuse mrview's intensity-windowed colourmaps (those
+        // interpolate between labels and produce garbage at region boundaries).
+        // Instead the label volume is baked into a scratch volume of *compact
+        // region indices*, uploaded as a nearest-neighbour-sampled R32F 3D
+        // texture, and a dedicated shader looks each index up in a small RGB
+        // palette texture. That keeps every region a solid colour and lets the
+        // shader give the region under the cursor full opacity while the rest are
+        // dimmed, which is what the niivue atlas view does.
         class Atlas : public Base
         { MEMALIGN(Atlas)
             Q_OBJECT
@@ -44,10 +48,14 @@ namespace MR
 
             class Item;
             class Model;
+            class Shader;
 
             Atlas (Dock* parent);
 
             void draw (const Projection& projection, bool is_3D, int axis, int slice) override;
+
+            static void add_commandline_options (MR::App::OptionList& options);
+            bool process_commandline_option (const MR::App::ParsedOption& opt) override;
 
             std::string session_key () const override { return "atlases"; }
             void get_session (nlohmann::json&) const override;
@@ -60,19 +68,28 @@ namespace MR
             void toggle_shown_slot (const QModelIndex&, const QModelIndex&);
             void selection_changed_slot (const QItemSelection&, const QItemSelection&);
             void opacity_slot (int);
+            void dim_slot (int);
             void focus_changed_slot ();
+            void hover_changed_slot ();
             void region_activated_slot (QListWidgetItem*);
+            void region_highlight_slot (QListWidgetItem*, QListWidgetItem*);
 
           protected:
             Model* atlas_list_model;
             QListView* atlas_list_view;
             QPushButton* hide_all_button;
             QSlider* opacity_slider;
+            QSlider* dim_slider;
             QLabel* region_label;
             QListWidget* region_list;
+            bool syncing_region_list;
 
             Item* current_item ();
             void populate_region_list ();
+            // Set the highlighted (fully opaque) region by its compact index;
+            // updates the read-out label and the region list selection.
+            void set_highlight (size_t index);
+            void update_region_label ();
             void dropEvent (QDropEvent* event) override;
         };
 

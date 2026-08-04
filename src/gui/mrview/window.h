@@ -168,6 +168,9 @@ namespace MR
 
         signals:
           void focusChanged ();
+          // emitted on passive mouse motion over the GL area (no button held and
+          // no tool dragging), for tools that track what is under the cursor
+          void hoverChanged ();
           void targetChanged ();
           void sliceChanged ();
           void planeChanged ();
