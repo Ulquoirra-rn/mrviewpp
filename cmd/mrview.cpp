@@ -18,6 +18,8 @@
 #include "command.h"
 #include "progressbar.h"
 #include "memory.h"
+#include "header.h"
+#include "file/path.h"
 #include "file/config.h"
 #include "gui/mrview/icons.h"
 #include "gui/mrview/window.h"
@@ -115,6 +117,18 @@ void run ()
     e.display();
     return;
   }
+
+#ifdef MRTRIX_WASM
+  // Dev: auto-load a preloaded test image (bundled via --preload-file) so slice
+  // rendering can be validated without an interactive file picker.
+  if (MR::Path::exists ("/preload.nii")) {
+    try {
+      vector<std::unique_ptr<MR::Header>> plist;
+      plist.push_back (std::make_unique<MR::Header> (MR::Header::open ("/preload.nii")));
+      window.add_images (plist);
+    } catch (MR::Exception& e) { e.display(); }
+  }
+#endif
 
   if (qApp->exec())
     throw Exception ("error running Qt application");
