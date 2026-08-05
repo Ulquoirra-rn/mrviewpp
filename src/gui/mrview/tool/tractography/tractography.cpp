@@ -28,6 +28,14 @@
 #include "gui/mrview/qthelpers.h"
 #include "gui/mrview/colour_palette.h"
 #include "gui/mrview/tool/tractography/tractography.h"
+
+#include "file/ofstream.h"
+#include <set>
+
+#include "gui/mrview/tool/roi_editor/roi.h"
+
+#include "dwi/tractography/roi.h"
+#include "gui/mrview/tool/tractography/bundle_stats.h"
 #include "gui/dialog/file.h"
 #include "gui/mrview/tool/list_model_base.h"
 #include "gui/mrview/tool/tractography/track_scalar_file.h"
@@ -319,6 +327,79 @@ namespace MR
             scalar_file_options = new TrackScalarFileOptions (this);
             main_box->addWidget (scalar_file_options);
 
+            // --- editing / selection / statistics ---
+            QGroupBox* edit_groupbox = new QGroupBox (tr ("Edit && measure"));
+            main_box->addWidget (edit_groupbox);
+            GridLayout* edit_grid = new GridLayout;
+            edit_groupbox->setLayout (edit_grid);
+
+            edit_enable_box = new QCheckBox (tr ("enable editing"), this);
+            edit_enable_box->setToolTip (
+                tr ("Load the selected tractograms' streamlines into memory so they can be\n"
+                    "selected, split and measured. This costs memory proportional to the\n"
+                    "number of streamlines, so it is off by default."));
+            connect (edit_enable_box, SIGNAL (toggled(bool)), this, SLOT (edit_enable_slot(bool)));
+            edit_grid->addWidget (edit_enable_box, 0, 0, 1, 3);
+
+            select_region_button = new QPushButton (tr ("Select by region..."), this);
+            select_region_button->setToolTip (tr ("Keep or reject streamlines by their relationship "
+                                                 "to a region from the Overlay, Atlas or ROI editor tool"));
+            connect (select_region_button, SIGNAL (clicked()), this, SLOT (select_by_region_slot()));
+            edit_grid->addWidget (select_region_button, 1, 0, 1, 2);
+            invert_button = new QPushButton (tr ("Invert"), this);
+            connect (invert_button, SIGNAL (clicked()), this, SLOT (invert_selection_slot()));
+            edit_grid->addWidget (invert_button, 1, 2);
+
+            select_all_button = new QPushButton (tr ("Select all"), this);
+            connect (select_all_button, SIGNAL (clicked()), this, SLOT (select_all_streamlines_slot()));
+            edit_grid->addWidget (select_all_button, 2, 0);
+            keep_button = new QPushButton (tr ("Keep"), this);
+            keep_button->setToolTip (tr ("Permanently discard everything not selected"));
+            connect (keep_button, SIGNAL (clicked()), this, SLOT (keep_selection_slot()));
+            edit_grid->addWidget (keep_button, 2, 1);
+            delete_button = new QPushButton (tr ("Delete"), this);
+            delete_button->setToolTip (tr ("Permanently discard the selected streamlines"));
+            connect (delete_button, SIGNAL (clicked()), this, SLOT (delete_selection_slot()));
+            edit_grid->addWidget (delete_button, 2, 2);
+
+            split_button = new QPushButton (tr ("Split selection"), this);
+            split_button->setToolTip (tr ("Copy the selected streamlines into a new tractogram"));
+            connect (split_button, SIGNAL (clicked()), this, SLOT (split_selection_slot()));
+            edit_grid->addWidget (split_button, 3, 0, 1, 3);
+
+            stats_button = new QPushButton (tr ("Statistics..."), this);
+            connect (stats_button, SIGNAL (clicked()), this, SLOT (statistics_slot()));
+            edit_grid->addWidget (stats_button, 4, 0, 1, 2);
+            profile_button = new QPushButton (tr ("Profile..."), this);
+            profile_button->setToolTip (tr ("Sample an image along the bundle and export the profile"));
+            connect (profile_button, SIGNAL (clicked()), this, SLOT (profile_slot()));
+            edit_grid->addWidget (profile_button, 4, 2);
+
+            rule_list = new QListWidget (this);
+            rule_list->setToolTip (
+                tr ("Region criteria currently applied to the selected tractogram.\n"
+                    "These are re-evaluated whenever the region is edited, so drawing\n"
+                    "more of an \"avoids\" region immediately deselects what it covers."));
+            rule_list->setMaximumHeight (70);
+            rule_list->setSelectionMode (QAbstractItemView::NoSelection);
+            edit_grid->addWidget (rule_list, 5, 0, 1, 3);
+
+            clear_rules_button = new QPushButton (tr ("Clear region criteria"), this);
+            connect (clear_rules_button, SIGNAL (clicked()), this, SLOT (clear_rules_slot()));
+            edit_grid->addWidget (clear_rules_button, 6, 0, 1, 3);
+
+            edit_status_label = new QLabel ("");
+            edit_status_label->setWordWrap (true);
+            edit_grid->addWidget (edit_status_label, 7, 0, 1, 3);
+
+            // Re-evaluating criteria means re-reading each region and testing every
+            // streamline, so bursts of edits (a drag is many strokes) are coalesced
+            // rather than recomputed for each one.
+            rule_refresh_timer = new QTimer (this);
+            rule_refresh_timer->setSingleShot (true);
+            connect (rule_refresh_timer, SIGNAL (timeout()), this, SLOT (reapply_rules_slot()));
+            connect (&window(), SIGNAL (regionsChanged()), this, SLOT (regions_changed_slot()));
+
             QGroupBox* general_groupbox = new QGroupBox ("General options");
             GridLayout* general_opt_grid = new GridLayout;
             general_opt_grid->setContentsMargins (0, 0, 0, 0);
@@ -425,6 +506,33 @@ namespace MR
 
 
         Tractography::~Tractography () {}
+
+
+        Tractogram* Tractography::add_tractogram_from_memory (
+            const vector<MR::DWI::Tractography::Streamline<float>>& tracks,
+            const MR::DWI::Tractography::Properties& props,
+            const std::string& display_name,
+            uint64_t total_attempted,
+            bool solid_colour)
+        {
+          Tractogram* tractogram = new Tractogram (*this, display_name, display_name);
+          try {
+            tractogram->load_tracks_from_memory (tracks, props, total_attempted);
+            if (solid_colour)
+              tractogram_list_model->apply_solid_colour (tractogram);
+            tractogram_list_model->insert_tractogram (tractogram);
+          } catch (Exception& e) {
+            delete tractogram;
+            throw;
+          }
+          tractogram_list_view->selectionModel()->clear();
+          tractogram_list_view->selectionModel()->select (
+              tractogram_list_model->index (tractogram_list_model->rowCount()-1, 0),
+              QItemSelectionModel::Select);
+          window().updateGL();
+          return tractogram;
+        }
+
 
 
         void Tractography::draw (const Projection& transform, bool is_3D, int, int)
@@ -772,6 +880,472 @@ namespace MR
         }
 
 
+        vector<Tractogram*> Tractography::selected_tractograms ()
+        {
+          vector<Tractogram*> out;
+          QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
+          for (QModelIndex idx : indices)
+            if (Tractogram* t = tractogram_list_model->get_tractogram (idx))
+              out.push_back (t);
+          return out;
+        }
+
+
+
+        void Tractography::update_edit_controls ()
+        {
+          auto selected = selected_tractograms();
+          bool any_editing = false;
+          size_t total = 0, chosen = 0;
+          for (Tractogram* t : selected) {
+            if (!t->editing_enabled())
+              continue;
+            any_editing = true;
+            total += t->num_cpu_tracks();
+            for (const uint8_t f : t->selection())
+              chosen += f ? 1 : 0;
+          }
+          for (QPushButton* b : { select_region_button, invert_button, select_all_button,
+                                  keep_button, delete_button, split_button })
+            b->setEnabled (any_editing);
+          stats_button->setEnabled (any_editing);
+          profile_button->setEnabled (any_editing);
+          if (any_editing)
+            edit_status_label->setText (QString ("%1 of %2 streamlines selected")
+                .arg (uint64_t (chosen)).arg (uint64_t (total)));
+          else
+            edit_status_label->setText ("");
+        }
+
+
+
+        void Tractography::edit_enable_slot (bool enable)
+        {
+          auto selected = selected_tractograms();
+          if (selected.empty()) {
+            QMessageBox::information (this, "Edit tractogram",
+                "Select one or more tractograms in the list first.");
+            edit_enable_box->setChecked (false);
+            return;
+          }
+          try {
+            for (Tractogram* t : selected) {
+              if (enable) {
+                QApplication::setOverrideCursor (Qt::WaitCursor);
+                t->enable_editing();
+                QApplication::restoreOverrideCursor();
+              } else {
+                t->clear_selection();
+                t->disable_editing();
+              }
+            }
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Edit tractogram", qstr (e[0]));
+            edit_enable_box->setChecked (false);
+          }
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::select_by_region_slot ()
+        {
+          auto selected = selected_tractograms();
+          if (selected.empty())
+            return;
+
+          vector<RegionRef> available;
+          collect_regions (available);
+
+          // "passes through" keeps streamlines that touch the region;
+          // "avoids" keeps those that do not.
+          QMenu menu (this);
+
+          // Draw a fresh region without leaving this panel. Useful for "avoids" in
+          // particular: create it, then paint where you do not want streamlines.
+          QMenu* fresh = menu.addMenu (tr ("New region (ROI editor)..."));
+          fresh->addAction (tr ("passes through"))->setData (qstr (std::string ("in:<new>")));
+          fresh->addAction (tr ("avoids"))->setData (qstr (std::string ("out:<new>")));
+          if (available.size())
+            menu.addSeparator();
+          std::string group;
+          for (const auto& region : available) {
+            if (region.provider != group) {
+              group = region.provider;
+              menu.addSection (qstr (group));
+            }
+            QMenu* sub = menu.addMenu (qstr (region.name));
+            QAction* through = sub->addAction (tr ("passes through"));
+            through->setData (qstr ("in:" + region.key));
+            QAction* avoids = sub->addAction (tr ("avoids"));
+            avoids->setData (qstr ("out:" + region.key));
+          }
+          QAction* chosen = menu.exec (select_region_button->mapToGlobal (
+              QPoint (0, select_region_button->height())));
+          if (!chosen)
+            return;
+
+          const std::string data = chosen->data().toString().toStdString();
+          const bool want_inside = data.compare (0, 3, "in:") == 0;
+          const std::string key = data.substr (want_inside ? 3 : 4);
+
+          RegionRef created;
+          const RegionRef* region = nullptr;
+          if (key == "<new>") {
+            try {
+              ROI* roi_tool = get_tool<ROI>();
+              if (!roi_tool)
+                throw Exception ("could not open the ROI editor");
+              created = roi_tool->create_region();
+              region = &created;
+            } catch (Exception& e) {
+              QMessageBox::warning (this, "New region", qstr (e[0]));
+              return;
+            }
+          } else {
+            for (const auto& candidate : available)
+              if (candidate.key == key)
+                region = &candidate;
+          }
+          if (!region)
+            return;
+
+          try {
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            for (Tractogram* t : selected) {
+              if (!t->editing_enabled())
+                continue;
+              // Record the criterion and evaluate it, rather than baking the
+              // result in: the region may be edited afterwards.
+              t->add_selection_rule (*region, want_inside);
+              t->apply_selection_rules();
+            }
+            QApplication::restoreOverrideCursor();
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Select by region", qstr (e[0]));
+          }
+          apply_region_opacities();
+          refresh_rule_list();
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::refresh_rule_list ()
+        {
+          rule_list->clear();
+          bool any = false;
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            for (const auto& rule : t->selection_rules()) {
+              QListWidgetItem* item = new QListWidgetItem (
+                  qstr (rule.region.name) + (rule.want_inside ? "  -  passes through" : "  -  avoids"),
+                  rule_list);
+              item->setToolTip (qstr (rule.region.label()));
+              QPixmap swatch (12, 12);
+              swatch.fill (rule.region.colour);
+              item->setIcon (QIcon (swatch));
+              any = true;
+            }
+          }
+          clear_rules_button->setEnabled (any);
+          rule_list->setVisible (true);
+        }
+
+
+
+        void Tractography::apply_region_opacities (const vector<RegionRef>& released)
+        {
+          // A region dimmed as "avoid" for one tractogram stays dimmed while any
+          // tractogram still avoids it; anything else goes back to full opacity.
+          std::set<std::string> avoided, referenced;
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            Tractogram* t = dynamic_cast<Tractogram*> (tractogram_list_model->items[i].get());
+            if (!t)
+              continue;
+            for (const auto& rule : t->selection_rules()) {
+              referenced.insert (rule.region.key);
+              if (!rule.want_inside)
+                avoided.insert (rule.region.key);
+            }
+          }
+
+          vector<RegionRef> all (released);
+          {
+            vector<RegionRef> current;
+            collect_regions (current);
+            for (const auto& region : current)
+              all.push_back (region);
+          }
+          std::set<std::string> done;
+          for (const auto& region : all) {
+            if (!done.insert (region.key).second)
+              continue;
+            if (!referenced.count (region.key) && !released.size())
+              continue;   // never touched by us: leave the user's own opacity alone
+            if (RegionProvider* provider = provider_for (region))
+              provider->set_region_opacity (region, avoided.count (region.key) ? avoid_region_opacity : 1.0f);
+          }
+        }
+
+
+
+        void Tractography::clear_rules_slot ()
+        {
+          vector<RegionRef> released;
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            for (const auto& rule : t->selection_rules())
+              released.push_back (rule.region);
+            t->clear_selection_rules();
+            try { t->apply_selection_rules(); }
+            catch (Exception& e) { e.display(); }
+          }
+          apply_region_opacities (released);
+          refresh_rule_list();
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::regions_changed_slot ()
+        {
+          // Only arm the timer if something actually depends on a region.
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            Tractogram* t = dynamic_cast<Tractogram*> (tractogram_list_model->items[i].get());
+            if (t && t->editing_enabled() && t->selection_rules().size()) {
+              rule_refresh_timer->start (200);
+              return;
+            }
+          }
+        }
+
+
+
+        void Tractography::reapply_rules_slot ()
+        {
+          // A region was edited, added or removed somewhere: re-evaluate every
+          // tractogram that has standing criteria, not just the selected ones, so
+          // the displayed selection never silently goes stale.
+          size_t unavailable = 0;
+          bool any = false;
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            Tractogram* t = dynamic_cast<Tractogram*> (tractogram_list_model->items[i].get());
+            if (!t || !t->editing_enabled() || t->selection_rules().empty())
+              continue;
+            try {
+              unavailable += t->apply_selection_rules();
+              any = true;
+            } catch (Exception& e) {
+              e.display();
+            }
+          }
+          if (!any)
+            return;
+          refresh_rule_list();
+          update_edit_controls();
+          if (unavailable)
+            edit_status_label->setText (QString ("%1 region criteria could not be evaluated "
+                                                "(region empty or its tool closed)").arg (uint64_t (unavailable)));
+          window().updateGL();
+        }
+
+
+
+        void Tractography::invert_selection_slot ()
+        {
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            vector<uint8_t> flags = t->selection();
+            for (auto& f : flags)
+              f = f ? 0 : 1;
+            try { t->set_selection (flags); }
+            catch (Exception& e) { e.display(); }
+            // A hand-made selection replaces the criteria; keeping them would mean
+            // the next region edit silently undid this.
+            t->clear_selection_rules();
+          }
+          refresh_rule_list();
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::select_all_streamlines_slot ()
+        {
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            vector<uint8_t> flags (t->num_cpu_tracks(), 1);
+            try { t->set_selection (flags); }
+            catch (Exception& e) { e.display(); }
+            t->clear_selection_rules();
+          }
+          refresh_rule_list();
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::keep_selection_slot ()
+        {
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            try { t->apply_selection (true); }
+            catch (Exception& e) { QMessageBox::warning (this, "Keep selection", qstr (e[0])); }
+          }
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::delete_selection_slot ()
+        {
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            try { t->apply_selection (false); }
+            catch (Exception& e) { QMessageBox::warning (this, "Delete selection", qstr (e[0])); }
+          }
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::split_selection_slot ()
+        {
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            auto tracks = t->selected_tracks();
+            if (tracks.empty()) {
+              QMessageBox::information (this, "Split selection", "Nothing is selected.");
+              continue;
+            }
+            MR::DWI::Tractography::Properties props;
+            props["split_from"] = t->get_filename();
+            try {
+              add_tractogram_from_memory (tracks, props,
+                  Path::basename (t->get_filename()) + " (selection)", tracks.size());
+            } catch (Exception& e) {
+              QMessageBox::warning (this, "Split selection", qstr (e[0]));
+            }
+          }
+          update_edit_controls();
+        }
+
+
+
+        void Tractography::statistics_slot ()
+        {
+          const MR::Header* grid = nullptr;
+          MR::Header header;
+          if (window().image()) {
+            header = window().image()->header();
+            header.ndim() = 3;
+            grid = &header;
+          }
+
+          std::string text, csv = BundleStats::csv_header() + "\n";
+          QApplication::setOverrideCursor (Qt::WaitCursor);
+          for (Tractogram* t : selected_tractograms()) {
+            if (!t->editing_enabled())
+              continue;
+            const std::string name = Path::basename (t->get_filename());
+            const BundleStats stats = compute_bundle_stats (t->cpu_tracks(), grid);
+            if (text.size()) text += "\n\n";
+            text += stats.as_text (name);
+            csv += stats.as_csv_row (name) + "\n";
+          }
+          QApplication::restoreOverrideCursor();
+
+          if (text.empty()) {
+            QMessageBox::information (this, "Bundle statistics",
+                "Enable editing on a tractogram first.");
+            return;
+          }
+          if (!grid)
+            text += "\n\n(volume requires a main image to be loaded)";
+
+          QMessageBox box (this);
+          box.setWindowTitle ("Bundle statistics");
+          box.setText (qstr (text));
+          box.setDetailedText (qstr (csv));
+          QPushButton* save = box.addButton (tr ("Save CSV..."), QMessageBox::ActionRole);
+          box.addButton (QMessageBox::Close);
+          box.exec();
+          if (box.clickedButton() == save) {
+            const std::string path = Dialog::File::get_save_name (this, "Save statistics", "bundle_stats.csv");
+            if (path.size()) {
+              try {
+                File::OFStream out (path);
+                out << csv;
+              } catch (Exception& e) { e.display(); }
+            }
+          }
+        }
+
+
+
+        void Tractography::profile_slot ()
+        {
+          auto selected = selected_tractograms();
+          bool any = false;
+          for (Tractogram* t : selected)
+            if (t->editing_enabled()) any = true;
+          if (!any) {
+            QMessageBox::information (this, "Along-tract profile",
+                "Enable editing on a tractogram first.");
+            return;
+          }
+
+          const std::string image_path = Dialog::File::get_image (this,
+              "Select the image to sample along the bundle");
+          if (image_path.empty())
+            return;
+
+          try {
+            auto scalar = MR::Image<float>::open (image_path);
+            const std::string scalar_name = Path::basename (image_path);
+            std::string csv;
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            for (Tractogram* t : selected) {
+              if (!t->editing_enabled())
+                continue;
+              const auto profile = compute_along_tract_profile (t->cpu_tracks(), scalar, 100, scalar_name);
+              csv += "# " + Path::basename (t->get_filename()) + " sampled from " + scalar_name + "\n";
+              csv += profile.as_csv();
+            }
+            QApplication::restoreOverrideCursor();
+
+            const std::string path = Dialog::File::get_save_name (this,
+                "Save along-tract profile", "profile.csv");
+            if (path.size()) {
+              File::OFStream out (path);
+              out << csv;
+              edit_status_label->setText (qstr ("profile written to " + Path::basename (path)));
+            }
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Along-tract profile", qstr (e[0]));
+          }
+        }
+
+
+
         void Tractography::right_click_menu_slot (const QPoint& pos)
         {
           QModelIndex index = tractogram_list_view->indexAt (pos);
@@ -975,6 +1549,20 @@ namespace MR
         {
           update_scalar_options();
           update_geometry_type_gui();
+
+          // Keep the editing controls in step with whichever tractograms are now
+          // selected; the checkbox reflects them rather than driving them.
+          {
+            auto chosen = selected_tractograms();
+            bool all_editing = !chosen.empty();
+            for (Tractogram* t : chosen)
+              if (!t->editing_enabled()) all_editing = false;
+            edit_enable_box->blockSignals (true);
+            edit_enable_box->setChecked (all_editing);
+            edit_enable_box->blockSignals (false);
+            update_edit_controls();
+            refresh_rule_list();
+          }
 
           QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
           if (!indices.size()) {

@@ -103,12 +103,20 @@ namespace MR
 
 
 
-        ROI_UndoEntry::ROI_UndoEntry (ROI_Item& roi, int current_axis, int current_slice)
+        ROI_UndoEntry::ROI_UndoEntry (ROI_Item& roi, int current_axis, int current_slice, int slab_slices)
         {
+          slab_axis = current_axis;
+          const GLint extent = GLint (roi.header().size (current_axis));
+          // Centre the slab on the drawn slice, clipped to the volume.
+          const GLint half = std::max (0, (slab_slices - 1) / 2);
+          const GLint first = std::max (GLint(0), GLint(current_slice) - half);
+          const GLint last = std::min (extent - 1, GLint(current_slice) + (GLint(std::max (1, slab_slices)) - 1 - half));
+
           from = { { 0, 0, 0 } };
-          from[current_axis] = current_slice;
+          from[current_axis] = first;
+          slab_reference = GLint(current_slice) - first;
           size = { { GLint(roi.header().size(0)), GLint(roi.header().size(1)), GLint(roi.header().size(2)) } };
-          size[current_axis] = 1;
+          size[current_axis] = std::max (GLint(1), last - first + 1);
 
           if (current_axis == 0) { slice_axes[0] = 1; slice_axes[1] = 2; }
           else if (current_axis == 1) { slice_axes[0] = 0; slice_axes[1] = 2; }
@@ -140,27 +148,40 @@ namespace MR
           framebuffer.check();
           GL_CHECK_ERROR;
 
-          // render slice onto framebuffer:
+          // render each slice of the slab onto the framebuffer and read it back:
           gl::Disable (gl::DEPTH_TEST);
           gl::Disable (gl::BLEND);
           gl::DepthMask (gl::FALSE_);
           gl::Viewport (0, 0, tex_size[0], tex_size[1]);
-          roi.texture().bind();
-          shared->program.start();
-          gl::Uniform3iv (gl::GetUniformLocation (shared->program, "position"), 1, from.data());
-          gl::Uniform2iv (gl::GetUniformLocation (shared->program, "axes"), 1, slice_axes.data());
 
-          gl::DrawArrays (gl::TRIANGLE_FAN, 0, 4);
-          shared->program.stop();
+          before.assign (size_t (size[0]) * size[1] * size[2], 0);
+          vector<GLubyte> plane (size_t (tex_size[0]) * tex_size[1]);
+
+          for (GLint s = 0; s != size[slab_axis]; ++s) {
+            std::array<GLint,3> position = from;
+            position[slab_axis] = from[slab_axis] + s;
+
+            roi.texture().bind();
+            shared->program.start();
+            gl::Uniform3iv (gl::GetUniformLocation (shared->program, "position"), 1, position.data());
+            gl::Uniform2iv (gl::GetUniformLocation (shared->program, "axes"), 1, slice_axes.data());
+            gl::DrawArrays (gl::TRIANGLE_FAN, 0, 4);
+            shared->program.stop();
+            GL_CHECK_ERROR;
+
+            tex.bind();
+            gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
+            gl::GetTexImage (gl::TEXTURE_2D, 0, gl::RED, gl::UNSIGNED_BYTE, (void*)(&plane[0]));
+            GL_CHECK_ERROR;
+
+            // The readback is x-fastest over the two in-plane axes; scatter it into
+            // the 3D edit buffer, whose slab axis need not be the slowest one.
+            for (GLint v = 0; v != tex_size[1]; ++v)
+              for (GLint u = 0; u != tex_size[0]; ++u)
+                before[offset_of (s, u, v)] = plane[size_t (u) + size_t (tex_size[0]) * v];
+          }
+
           framebuffer.unbind();
-          GL_CHECK_ERROR;
-
-          // retrieve texture contents to main memory:
-          before.resize (tex_size[0]*tex_size[1]);
-          tex.bind();
-          gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
-
-          gl::GetTexImage (gl::TEXTURE_2D, 0, gl::RED, gl::UNSIGNED_BYTE, (void*)(&before[0]));
           after = before;
           GL_CHECK_ERROR;
           GL::assert_context_is_current();
@@ -270,6 +291,8 @@ namespace MR
             }
           } while ((v - final_vox).abs().maxCoeff());
 
+          replicate_slab();
+
           GL::Context::Grab context;
           GL::assert_context_is_current();
           roi.texture().bind();
@@ -316,6 +339,8 @@ namespace MR
 
           } } }
 
+          replicate_slab();
+
           GL::Context::Grab context;
           GL::assert_context_is_current();
           roi.texture().bind();
@@ -351,6 +376,8 @@ namespace MR
                     Math::pow2 (roi.header().spacing(2) * (vox[2]-k)) < radius_sq)
                   after[i-from[0] + size[0] * (j-from[1] + size[1] * (k-from[2]))] = value;
 
+          replicate_slab();
+
           GL::Context::Grab context;
           GL::assert_context_is_current();
           roi.texture().bind();
@@ -383,6 +410,8 @@ namespace MR
             for (int j = a[1]; j <= b[1]; ++j)
               for (int i = a[0]; i <= b[0]; ++i)
                 after[i-from[0] + size[0] * (j-from[1] + size[1] * (k-from[2]))] = value;
+
+          replicate_slab();
 
           GL::Context::Grab context;
           GL::assert_context_is_current();
@@ -428,6 +457,8 @@ namespace MR
               }
             }
           }
+          replicate_slab();
+
           GL::Context::Grab context;
           GL::assert_context_is_current();
           roi.texture().bind();
@@ -436,6 +467,26 @@ namespace MR
         }
 
 
+
+
+
+        void ROI_UndoEntry::replicate_slab ()
+        {
+          if (size[slab_axis] <= 1)
+            return;
+          for (GLint v = 0; v != tex_size[1]; ++v) {
+            for (GLint u = 0; u != tex_size[0]; ++u) {
+              const size_t ref = offset_of (slab_reference, u, v);
+              if (after[ref] == before[ref])
+                continue;   // untouched by this stroke; leave the other slices alone
+              const GLubyte value = after[ref];
+              for (GLint s = 0; s != size[slab_axis]; ++s) {
+                if (s != slab_reference)
+                  after[offset_of (s, u, v)] = value;
+              }
+            }
+          }
+        }
 
 
 
@@ -450,6 +501,8 @@ namespace MR
 
         void ROI_UndoEntry::redo (ROI_Item& roi)
         {
+          // Replays the stored result verbatim; the slab was already applied when
+          // the stroke was made.
           GL::Context::Grab context;
           GL::assert_context_is_current();
           roi.texture().bind();

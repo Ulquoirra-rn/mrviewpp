@@ -41,7 +41,10 @@ namespace MR
 
         struct ROI_UndoEntry { MEMALIGN(ROI_UndoEntry)
 
-          ROI_UndoEntry (ROI_Item&, int, int);
+          // slab_slices is the number of slices the edit spans along the drawing
+          // axis (1 = the traditional single-slice behaviour); the slab is centred
+          // on the given slice and clipped to the volume.
+          ROI_UndoEntry (ROI_Item&, int current_axis, int current_slice, int slab_slices = 1);
           ROI_UndoEntry (ROI_Item&);            // whole-volume entry: captures the current ROI as "before"
           ROI_UndoEntry (const ROI_UndoEntry&) = delete;
           ROI_UndoEntry (ROI_UndoEntry&&);
@@ -65,7 +68,24 @@ namespace MR
 
           std::array<GLint,3> from, size;
           std::array<GLint,2> tex_size, slice_axes;
+          GLint slab_axis = 2;    //!< the axis the edit spans; size[slab_axis] slices
+          GLint slab_reference = 0;   //!< index within the slab of the drawn slice
           vector<GLubyte> before, after;
+
+          //! Propagate this stroke through the slab.
+          /*! Only the voxels the stroke actually changed on the drawn slice are
+           *  copied to the other slices, so whatever was already drawn on them is
+           *  preserved. A no-op for a single-slice edit. */
+          void replicate_slab ();
+
+          //! Offset into before/after of voxel (u,v) on slab slice \a s.
+          size_t offset_of (GLint s, GLint u, GLint v) const {
+            std::array<GLint,3> idx;
+            idx[slab_axis] = s;
+            idx[slice_axes[0]] = u;
+            idx[slice_axes[1]] = v;
+            return size_t (idx[0]) + size_t (size[0]) * (size_t (idx[1]) + size_t (size[1]) * size_t (idx[2]));
+          }
 
           class Shared
           { MEMALIGN(Shared)
