@@ -15,6 +15,9 @@ APP="mrview++.app"
 EXE="mrview++"
 SYS_QT_LIB="/usr/local/mrtrix3/lib"
 SYS_QT_PLUGINS="/usr/local/mrtrix3/bin/plugins"
+# Single source of truth for the fork version (see core/fork_version.h).
+VERSION="$(sed -n 's/.*MRVIEWPP_VERSION "\(.*\)".*/\1/p' core/fork_version.h)"
+[ -n "$VERSION" ] || { echo "could not read MRVIEWPP_VERSION from core/fork_version.h"; exit 1; }
 
 [ -x bin/mrview ]          || { echo "bin/mrview not found - build it first"; exit 1; }
 [ -f lib/libmrtrix.dylib ] || { echo "lib/libmrtrix.dylib not found"; exit 1; }
@@ -73,8 +76,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>mrview++</string>
   <key>CFBundleIconFile</key><string>$EXE.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>3.0</string>
-  <key>CFBundleVersion</key><string>3.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>10.14</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>

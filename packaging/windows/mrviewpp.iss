@@ -19,9 +19,11 @@
 ; Produces: Output\mrview++-setup.exe
 
 #define AppName "mrview++"
-; Version can be overridden from the command line: ISCC /DAppVer=3.0.5
+; The version comes from core/fork_version.h, passed in by make_installer.sh
+; (or from the release tag by CI):  ISCC /DAppVer=3.0.5
+; The fallback below is only reached if iscc is run by hand.
 #ifndef AppVer
-  #define AppVer "3.0"
+  #define AppVer "0.0.0"
 #endif
 
 [Setup]

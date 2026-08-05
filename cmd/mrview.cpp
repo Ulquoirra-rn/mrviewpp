@@ -16,6 +16,7 @@
 
 #include "gui/gui.h"
 #include "command.h"
+#include "fork_version.h"
 #include "progressbar.h"
 #include "memory.h"
 #include "header.h"
@@ -47,6 +48,8 @@ void usage ()
   SYNOPSIS = "The MRtrix image viewer";
 
   DESCRIPTION
+  + "This is mrview++ version " MRVIEWPP_VERSION ", a fork of MRtrix3's mrview."
+
   + "Any images listed as arguments will be loaded and available through the "
     "image menu, with the first listed displayed initially. Any subsequent "
     "command-line options will be processed as if the corresponding action had "

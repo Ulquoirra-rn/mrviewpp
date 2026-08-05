@@ -53,7 +53,10 @@ case "$OS" in
       [ -f "$dll" ] && cp -u "$dll" dist/ 2>/dev/null || true
     done
     ISCC="$(command -v iscc || command -v ISCC.exe)"
-    "$ISCC" packaging/windows/mrviewpp.iss
+    # Single source of truth for the fork version (see core/fork_version.h).
+    VERSION="$(sed -n 's/.*MRVIEWPP_VERSION "\(.*\)".*/\1/p' core/fork_version.h)"
+    [ -n "$VERSION" ] || { echo "could not read MRVIEWPP_VERSION from core/fork_version.h"; exit 1; }
+    "$ISCC" "/DAppVer=$VERSION" packaging/windows/mrviewpp.iss
     echo "Installer: packaging/windows/Output/mrview++-setup.exe"
     ;;
 

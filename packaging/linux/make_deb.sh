@@ -34,8 +34,10 @@ cd "$(dirname "$0")/../.."
 [ -x bin/mrview ] || { echo "bin/mrview not found - run ./configure && ./build bin/mrview first"; exit 1; }
 command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb not found - install 'dpkg-dev'"; exit 1; }
 
-# Version from the nearest git tag (strip a leading 'v'); fall back to 3.0.0.
-VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+# Version from core/fork_version.h (the single source of truth); fall back to
+# the nearest git tag with a leading 'v' stripped.
+VERSION="$(sed -n 's/.*MRVIEWPP_VERSION "\(.*\)".*/\1/p' core/fork_version.h 2>/dev/null)"
+[ -n "$VERSION" ] || VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
 [ -n "$VERSION" ] || VERSION="3.0.0"
 ARCH="$(dpkg --print-architecture)"
 

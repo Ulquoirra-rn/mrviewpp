@@ -49,6 +49,9 @@ namespace MR
         class ODF;
         class CameraInteractor;
       }
+#ifndef MRTRIX_WASM
+      class UpdateCheck;
+#endif
 
 
       class Window : public QMainWindow, ColourMapButtonObserver
@@ -171,6 +174,9 @@ namespace MR
           // emitted on passive mouse motion over the GL area (no button held and
           // no tool dragging), for tools that track what is under the cursor
           void hoverChanged ();
+          // emitted when a tool's regions are added, removed or edited, so that
+          // anything derived from them (e.g. a tractogram selection) can refresh
+          void regionsChanged ();
           void targetChanged ();
           void sliceChanged ();
           void planeChanged ();
@@ -231,6 +237,10 @@ namespace MR
           void OpenGL_slot ();
           void about_slot ();
           void aboutQt_slot ();
+#ifndef MRTRIX_WASM
+          void check_for_updates_slot ();
+          void auto_update_slot (bool);
+#endif
 
           void process_commandline_option_slot ();
 
@@ -251,6 +261,10 @@ namespace MR
           };
 
           std::unique_ptr<Mode::Base> mode;
+#ifndef MRTRIX_WASM
+          std::unique_ptr<UpdateCheck> update_check;
+          QAction* auto_update_action;
+#endif
           GL::Lighting* lighting_;
           GL::Font font;
 

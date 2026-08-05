@@ -18,8 +18,30 @@ on:
       - 'v*'          # pushing a version tag (e.g. v3.0.0) publishes a Release
 
 jobs:
+  # ------------------------------------------------------------- version -----
+  # core/fork_version.h is the single source of truth for the fork version.
+  # A release tag must agree with it, or the installers would ship a version
+  # string that disagrees with what the in-app update check compares against.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: get
+        run: |
+          VERSION="$(sed -n 's/.*MRVIEWPP_VERSION "\(.*\)".*/\1/p' core/fork_version.h)"
+          [ -n "$VERSION" ] || { echo "could not read MRVIEWPP_VERSION from core/fork_version.h"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "fork version: $VERSION"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            [ "${GITHUB_REF_NAME}" = "v$VERSION" ] || {
+              echo "::error::tag ${GITHUB_REF_NAME} does not match core/fork_version.h (expected v$VERSION)"; exit 1; }
+          fi
+
   # ---------------------------------------------------------------- macOS ----
   macos:
+    needs: version
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}
     runs-on: macos-14
     steps:
@@ -48,6 +70,8 @@ jobs:
             <key>CFBundleIdentifier</key><string>ai.brainsight.mrviewpp</string>
             <key>CFBundleName</key><string>mrview++</string>
             <key>CFBundleIconFile</key><string>mrview++.icns</string>
+            <key>CFBundleShortVersionString</key><string>${{ needs.version.outputs.version }}</string>
+            <key>CFBundleVersion</key><string>${{ needs.version.outputs.version }}</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
@@ -67,6 +91,7 @@ jobs:
 
   # ---------------------------------------------------------------- Ubuntu ---
   linux:
+    needs: version
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
     runs-on: ubuntu-22.04
     steps:
@@ -94,6 +119,7 @@ jobs:
   # is smoke-tested by installing it in a clean ubuntu:24.04 container and
   # launching mrview++ headlessly.
   deb:
+    needs: version
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
     strategy:
       fail-fast: false
@@ -147,6 +173,7 @@ jobs:
 
   # --------------------------------------------------------------- Windows ---
   windows:
+    needs: version
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}
     runs-on: windows-latest
     defaults:
@@ -271,10 +298,10 @@ jobs:
           choco install innosetup -y --no-progress
           # generate .ico from the PNG for the installer
           magick convert icons/mrview++.png -define icon:auto-resize=256,128,64,48,32,16 packaging/windows/mrviewpp.ico || copy icons\mrview++.png packaging\windows\mrviewpp.ico
-          # pass the release version (from the vX.Y.Z tag) so the installer's
-          # AppVersion is correct; the fixed AppId makes it upgrade in place.
-          $ver = "3.0"
-          if ($env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
+          # AppVersion comes from core/fork_version.h (the version job already
+          # checked it agrees with the release tag); the fixed AppId makes the
+          # installer upgrade in place.
+          $ver = "${{ needs.version.outputs.version }}"
           Write-Host "installer AppVer=$ver"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVer=$ver" packaging\windows\mrviewpp.iss
       - uses: actions/upload-artifact@v4
@@ -284,7 +311,7 @@ jobs:
   # On a version tag push (v*), gather the three installers and publish a
   # GitHub Release with them attached for one-click public download.
   release:
-    needs: [macos, linux, deb, windows]
+    needs: [version, macos, linux, deb, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

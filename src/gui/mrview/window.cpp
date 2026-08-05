@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <fstream>
 #include "app.h"
+#include "fork_version.h"
 #include "timer.h"
 #include "file/config.h"
 #include "file/path.h"
@@ -33,6 +34,7 @@
 #include "gui/dialog/opengl.h"
 #include "gui/dialog/progress.h"
 #include "gui/dialog/image_properties.h"
+#include "gui/mrview/update_check.h"
 #include "gui/mrview/qthelpers.h"
 #include "gui/mrview/mode/base.h"
 #include "gui/mrview/mode/list.h"
@@ -737,6 +739,14 @@ namespace MR
           menu->addAction (tr ("About mrview++"), this, SLOT (about_slot()));
           menu->addAction (tr ("About Qt"), this, SLOT (aboutQt_slot()));
           menu->addAction (tr ("OpenGL information"), this, SLOT (OpenGL_slot()));
+#ifndef MRTRIX_WASM
+          menu->addSeparator();
+          menu->addAction (tr ("Check for updates..."), this, SLOT (check_for_updates_slot()));
+          auto_update_action = menu->addAction (tr ("Check for updates on startup"));
+          auto_update_action->setCheckable (true);
+          auto_update_action->setChecked (UpdateCheck::auto_check_enabled());
+          connect (auto_update_action, SIGNAL (triggered(bool)), this, SLOT (auto_update_slot(bool)));
+#endif
 
 
           button = new QToolButton (this);
@@ -856,6 +866,17 @@ namespace MR
             save_session (p);
         });
         autosave_timer->start (120000);   // every 2 minutes
+
+#ifndef MRTRIX_WASM
+        // Ask GitHub whether there is a newer release. Silent unless there is
+        // one; self-throttled to once a day and disabled by the Info menu
+        // toggle. Deferred so it never delays showing the window.
+        QTimer::singleShot (3000, this, [this] () {
+          if (!update_check)
+            update_check.reset (new UpdateCheck (this));
+          update_check->check_in_background();
+        });
+#endif
       }
 
 
@@ -1616,10 +1637,27 @@ namespace MR
 
 
 
+#ifndef MRTRIX_WASM
+      void Window::check_for_updates_slot ()
+      {
+        if (!update_check)
+          update_check.reset (new UpdateCheck (this));
+        update_check->check_now();
+      }
+
+
+      void Window::auto_update_slot (bool enabled)
+      {
+        UpdateCheck::set_auto_check_enabled (enabled);
+      }
+#endif
+
+
       void Window::about_slot ()
       {
         std::string message =
-          std::string ("<h1>mrview++</h1>The MRtrix viewer (mrview++ fork), version ") + MR::App::mrtrix_version + "<br>"
+          std::string ("<h1>mrview++</h1>The MRtrix viewer (mrview++ fork), version ") + MRVIEWPP_VERSION + "<br>"
+          "based on MRtrix3 " + MR::App::mrtrix_version + "<br>"
           "<em>" + str (8*sizeof (size_t)) + " bit "
 #ifdef NDEBUG
           "release"
@@ -2024,7 +2062,8 @@ namespace MR
             { "overlays", "Overlay" },
             { "tracts",   "Tractography" },
             { "meshes",   "Mesh display" },
-            { "atlases",  "Atlas" }
+            { "atlases",  "Atlas" },
+            { "trackgen", "Track generation" }
           };
           for (const auto& kv : key_to_tool) {
             if (j.find (kv.first) == j.end())
