@@ -49,10 +49,14 @@ namespace MR
             class Item;
             class Model;
             class Shader;
+            class Regions;
 
             Atlas (Dock* parent);
+            ~Atlas ();
 
             void draw (const Projection& projection, bool is_3D, int axis, int slice) override;
+
+            RegionProvider* region_provider () override;
 
             static void add_commandline_options (MR::App::OptionList& options);
             bool process_commandline_option (const MR::App::ParsedOption& opt) override;
@@ -84,6 +88,7 @@ namespace MR
             QLabel* hover_region_label;
             QListWidget* region_list;
             bool syncing_region_list;
+            std::unique_ptr<Regions> regions;
 
             Item* current_item ();
             void populate_region_list ();

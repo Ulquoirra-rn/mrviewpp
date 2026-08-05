@@ -17,6 +17,7 @@
 #ifndef __gui_mrview_tool_list_model_base_h__
 #define __gui_mrview_tool_list_model_base_h__
 
+#include "file/path.h"
 #include "gui/mrview/displayable.h"
 
 namespace MR
@@ -43,7 +44,14 @@ namespace MR
                 return items[index.row()] && items[index.row()]->show ? Qt::Checked : Qt::Unchecked;
               }
               if (role != Qt::DisplayRole && role != Qt::ToolTipRole && role != Qt::EditRole) return QVariant();
-              return items[index.row()] ? qstr (items[index.row()]->get_filename()) : QString();
+              if (!items[index.row()]) return QString();
+              const std::string& name (items[index.row()]->get_filename());
+              // Show just the file name, so it stays legible in a narrow dock; the
+              // full path is available on hover. Editing sees the full string, so
+              // renaming cannot silently discard the directory part.
+              if (role == Qt::DisplayRole)
+                return qstr (Path::basename (name));
+              return qstr (name);
             }
 
             bool setData (const QModelIndex& idx, const QVariant& value, int role) override {

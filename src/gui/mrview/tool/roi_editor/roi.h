@@ -58,6 +58,17 @@ namespace MR
 
             void draw (const Projection& projection, bool is_3D, int axis, int slice) override;
 
+#ifndef MRTRIX_WASM
+            // Reading an ROI back off the GPU needs glGetTexImage, which WebGL2
+            // does not have, so ROIs are not offered as regions in WASM builds.
+            RegionProvider* region_provider () override;
+
+            //! Create a new empty ROI on the main image's grid and select it.
+            /*! Returns its RegionRef so a caller can use it immediately; throws if
+             *  there is no main image to take a grid from. */
+            RegionRef create_region ();
+#endif
+
             static void add_commandline_options (MR::App::OptionList& options);
             virtual bool process_commandline_option (const MR::App::ParsedOption& opt) override;
 
@@ -88,6 +99,9 @@ namespace MR
             void region_grow_slot ();
 
           protected:
+             class Regions;
+             std::unique_ptr<Regions> regions;
+
              QPushButton *hide_all_button, *close_button, *save_button;
              QPushButton *grow_cut_button, *region_grow_button;
              QToolButton *draw_button, *undo_button, *redo_button;
@@ -99,6 +113,7 @@ namespace MR
              QColorButton* colour_button;
              QSlider *opacity_slider;
              AdjustButton *brush_size_button;
+             AdjustButton *slab_thickness_button;
              AdjustButton *tolerance_button;
              int current_axis, current_slice;
              bool in_insert_mode, insert_mode_value;
@@ -107,6 +122,8 @@ namespace MR
 
              Mode::Slice::Shader shader;
 
+             int slab_slices (const ROI_Item&, int axis) const;
+             void announce_regions_changed ();
              void update_undo_redo ();
              void updateGL() {
                window().get_current_mode()->update_overlays = true;

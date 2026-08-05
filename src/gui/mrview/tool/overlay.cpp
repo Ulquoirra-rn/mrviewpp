@@ -306,6 +306,98 @@ namespace MR
 
 
 
+        // Offers each loaded overlay as a binary tracking ROI. The overlay's own
+        // display thresholds decide which voxels count, so what you see selected
+        // in the viewer is what the tracking engine gets; with no threshold set,
+        // any non-zero voxel counts.
+        class Overlay::Regions : public RegionProvider
+        { NOMEMALIGN
+          public:
+            Regions (Overlay& tool) : tool (tool) { }
+
+            std::string provider_name () const override { return "Overlay"; }
+
+            void list_regions (vector<RegionRef>& out) const override
+            {
+              for (size_t i = 0; i != tool.image_list_model->items.size(); ++i) {
+                const Item* overlay = dynamic_cast<const Item*> (tool.image_list_model->items[i].get());
+                if (!overlay)
+                  continue;
+                RegionRef ref;
+                ref.provider = provider_name();
+                ref.name = Path::basename (overlay->image.name());
+                ref.key = "overlay:" + overlay->image.name();
+                ref.colour = QColor (overlay->colour[0], overlay->colour[1], overlay->colour[2]);
+                ref.index = i;
+                out.push_back (ref);
+              }
+            }
+
+            MR::Image<bool> get_region_mask (const RegionRef& ref) const override
+            {
+              Item* overlay = find (ref);
+              if (!overlay)
+                throw Exception ("overlay \"" + ref.name + "\" is no longer loaded");
+
+              const bool dl = overlay->use_discard_lower();
+              const bool du = overlay->use_discard_upper();
+              const float lo = overlay->lessthan, hi = overlay->greaterthan;
+
+              MR::Image<cfloat> in (overlay->image);
+              MR::Header H (overlay->header());
+              H.ndim() = 3;
+              H.datatype() = MR::DataType::Bit;
+              auto out = MR::Image<bool>::scratch (H, ref.name);
+              for (auto l = MR::Loop (0, 3) (in, out); l; ++l) {
+                const cfloat cv = in.value();
+                const float v = cv.real();
+                bool keep = std::isfinite (v);
+                if (keep && dl) keep = v >= lo;
+                if (keep && du) keep = v <= hi;
+                if (keep && !dl && !du) keep = (v != 0.0f);
+                out.value() = keep;
+              }
+              return out;
+            }
+
+            bool resolve (const std::string& key, RegionRef& ref) const override
+            {
+              vector<RegionRef> all;
+              list_regions (all);
+              for (const auto& candidate : all) {
+                if (candidate.key == key) { ref = candidate; return true; }
+              }
+              return false;
+            }
+
+          private:
+            Overlay& tool;
+
+            Item* find (const RegionRef& ref) const
+            {
+              for (size_t i = 0; i != tool.image_list_model->items.size(); ++i) {
+                Item* overlay = dynamic_cast<Item*> (tool.image_list_model->items[i].get());
+                if (overlay && "overlay:" + overlay->image.name() == ref.key)
+                  return overlay;
+              }
+              return nullptr;
+            }
+        };
+
+
+
+        Overlay::~Overlay () { }
+
+
+        RegionProvider* Overlay::region_provider ()
+        {
+          if (!regions)
+            regions.reset (new Regions (*this));
+          return regions.get();
+        }
+
+
+
         void Overlay::dropEvent (QDropEvent* event)
         {
           static constexpr int max_files = 32;
@@ -705,6 +797,9 @@ namespace MR
 
         void Overlay::values_changed ()
         {
+          // The display threshold is what defines an overlay's region, so a change
+          // here changes any selection derived from it.
+          emit window().regionsChanged();
           QModelIndexList indices = image_list_view->selectionModel()->selectedIndexes();
           for (int i = 0; i < indices.size(); ++i) {
             Image* overlay = dynamic_cast<Image*> (image_list_model->get_image (indices[i]));

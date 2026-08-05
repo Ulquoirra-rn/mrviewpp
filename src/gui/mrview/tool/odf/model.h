@@ -22,6 +22,8 @@
 
 #include "types.h"
 
+#include "file/path.h"
+
 #include "gui/mrview/tool/odf/item.h"
 #include "gui/mrview/tool/odf/type.h"
 
@@ -46,7 +48,9 @@ namespace MR
             QVariant data (const QModelIndex& index, int role) const {
               if (!index.isValid()) return {};
               if (role != Qt::DisplayRole && role != Qt::ToolTipRole) return {};
-              return qstr (items[index.row()]->image.get_filename());
+              const std::string& name (items[index.row()]->image.get_filename());
+              // As in ListModelBase: file name in the list, full path on hover.
+              return qstr (role == Qt::DisplayRole ? Path::basename (name) : name);
             }
 
             bool setData (const QModelIndex& index, const QVariant& value, int role) {

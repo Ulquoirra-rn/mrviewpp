@@ -34,9 +34,11 @@ namespace MR
           QFrame (parent) {
             QFont f = font();
             //CONF option: MRViewToolFontSize
-            //CONF default: 2 points less than the standard system font
-            //CONF The point size for the font to use in MRView tools.
-            f.setPointSize (MR::File::Config::get_int ("MRViewToolFontSize", f.pointSize()-2));
+            //CONF default: the standard system font size
+            //CONF The point size for the font to use in MRView tools. Tool panels
+            //CONF used to be rendered 2 points smaller than the rest of the
+            //CONF interface, which made file names in the tool lists hard to read.
+            f.setPointSize (MR::File::Config::get_int ("MRViewToolFontSize", f.pointSize()));
             setFont (f);
             setFrameShadow (QFrame::Sunken);
             setFrameShape (QFrame::Panel);

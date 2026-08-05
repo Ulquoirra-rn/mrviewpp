@@ -410,6 +410,25 @@ namespace MR
 
 
 
+        vector<std::pair<std::string, std::string>> ODF::list_sh_images () const
+        {
+          vector<std::pair<std::string, std::string>> out;
+          for (size_t i = 0; i != image_list_model->items.size(); ++i) {
+            const ODF_Item* item = image_list_model->items[i].get();
+            if (!item || item->odf_type != odf_type_t::SH)
+              continue;
+            const std::string path = item->image.header().name();
+            // Header::open() is the only way into the tracking engine, so a
+            // scratch/derived image cannot be used as a tracking source.
+            if (!Path::is_file (path))
+              continue;
+            out.push_back ({ Path::basename (path), path });
+          }
+          return out;
+        }
+
+
+
         void ODF::get_values (Eigen::VectorXf& values, ODF_Item& item, const Eigen::Vector3f& pos, const bool interp)
         {
           MRView::Image& image (item.image);

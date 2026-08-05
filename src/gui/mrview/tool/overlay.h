@@ -39,8 +39,11 @@ namespace MR
           public:
 
             Overlay (Dock* parent);
+            ~Overlay ();
 
             void draw (const Projection& projection, bool is_3D, int axis, int slice) override;
+
+            RegionProvider* region_provider () override;
             void draw_colourbars () override;
             int draw_tool_labels (int position, int start_line_num, const Projection&transform) const override;
 
@@ -82,6 +85,7 @@ namespace MR
           protected:
              class Item;
              class Model;
+             class Regions;
              class InterpolateCheckBox : public QCheckBox
              { NOMEMALIGN
                public:
@@ -96,6 +100,7 @@ namespace MR
              };
 
              QPushButton* hide_all_button;
+             std::unique_ptr<Regions> regions;
              Model* image_list_model;
              QListView* image_list_view;
              ColourMapButton* colourmap_button;

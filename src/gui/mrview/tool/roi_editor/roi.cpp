@@ -202,6 +202,19 @@ namespace MR
           brush_size_button->setEnabled (true);
           grid_layout->addWidget (brush_size_button, 1, 1);
 
+          label = new QLabel (tr("slab:"));
+          grid_layout->addWidget (label, 2, 0, Qt::AlignRight);
+
+          slab_thickness_button = new AdjustButton (this, 0.5);
+          slab_thickness_button->setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Preferred);
+          slab_thickness_button->setToolTip (
+              tr ("Slab thickness in mm.\n\n"
+                  "Anything you draw on a slice is applied through this thickness\n"
+                  "perpendicular to the view, instead of to that one slice. Set it to\n"
+                  "0 (or leave it blank) to draw on a single slice as before."));
+          slab_thickness_button->setValue (0.0f);
+          grid_layout->addWidget (slab_thickness_button, 2, 1);
+
           fill_button = new QToolButton (this);
           fill_button->setToolButtonStyle (Qt::ToolButtonTextBesideIcon);
           fill_button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -236,7 +249,7 @@ namespace MR
           action->setChecked (false);
           edit_mode_group->addAction (action);
           grow_mode_button->setDefaultAction (action);
-          grid_layout->addWidget (grow_mode_button, 2, 0, 1, 4);
+          grid_layout->addWidget (grow_mode_button, 3, 0, 1, 4);
 
           main_box->addWidget (group_box, 0);
 
@@ -395,6 +408,7 @@ namespace MR
           list_view->selectionModel()->clear();
           list_view->selectionModel()->select (list_model->index (list_model->rowCount()-1, 0, QModelIndex()), QItemSelectionModel::Select);
           updateGL ();
+          announce_regions_changed();
           in_insert_mode = false;
         }
 
@@ -472,6 +486,23 @@ namespace MR
           auto out = MR::Image<bool>::create (path, header);
           roi->save (out, data.data());
         }
+
+
+#ifndef MRTRIX_WASM
+        // Same readback as write_roi_mask, but into a scratch image rather than
+        // a file, so an unsaved hand-drawn ROI can be used for tracking directly.
+        static MR::Image<bool> roi_to_image (ROI_Item* roi)
+        {
+          vector<GLubyte> data;
+          read_roi_voxels (roi, data);
+          MR::Header header (roi->header());
+          header.ndim() = 3;
+          header.datatype() = DataType::Bit;
+          auto out = MR::Image<bool>::scratch (header, Path::basename (roi->get_filename()));
+          roi->save (out, data.data());
+          return out;
+        }
+#endif
 
 
         void ROI::save_label_map (const vector<ROI_Item*>& rois, const std::string& path)
@@ -1024,6 +1055,101 @@ namespace MR
 
 
 
+#ifndef MRTRIX_WASM
+        // Offers each hand-drawn ROI as a tracking region. The mask lives only in
+        // an OpenGL texture, so get_region_mask() must run on the GUI thread -
+        // which RegionProvider already requires of every caller.
+        class ROI::Regions : public RegionProvider
+        { NOMEMALIGN
+          public:
+            Regions (ROI& tool) : tool (tool) { }
+
+            std::string provider_name () const override { return "ROI editor"; }
+
+            void list_regions (vector<RegionRef>& out) const override
+            {
+              for (size_t i = 0; i != tool.list_model->items.size(); ++i) {
+                const ROI_Item* roi = dynamic_cast<const ROI_Item*> (tool.list_model->items[i].get());
+                if (!roi)
+                  continue;
+                RegionRef ref;
+                ref.provider = provider_name();
+                ref.name = Path::basename (roi->get_filename());
+                // Unsaved ROIs have a synthetic ROI%05d.mif name, which is unique
+                // within the tool and is what the user sees in the list.
+                ref.key = "roi:" + roi->get_filename();
+                ref.colour = QColor (roi->colour[0], roi->colour[1], roi->colour[2]);
+                ref.index = i;
+                out.push_back (ref);
+              }
+            }
+
+            MR::Image<bool> get_region_mask (const RegionRef& ref) const override
+            {
+              ROI_Item* roi = find (ref);
+              if (!roi)
+                throw Exception ("ROI \"" + ref.name + "\" is no longer loaded");
+              return roi_to_image (roi);
+            }
+
+            bool resolve (const std::string& key, RegionRef& ref) const override
+            {
+              vector<RegionRef> all;
+              list_regions (all);
+              for (const auto& candidate : all) {
+                if (candidate.key == key) { ref = candidate; return true; }
+              }
+              return false;
+            }
+
+            void set_region_opacity (const RegionRef& ref, float alpha) override
+            {
+              if (ROI_Item* roi = find (ref)) {
+                roi->alpha = alpha;
+                tool.window().updateGL();
+              }
+            }
+
+          private:
+            ROI& tool;
+
+            ROI_Item* find (const RegionRef& ref) const
+            {
+              for (size_t i = 0; i != tool.list_model->items.size(); ++i) {
+                ROI_Item* roi = dynamic_cast<ROI_Item*> (tool.list_model->items[i].get());
+                if (roi && "roi:" + roi->get_filename() == ref.key)
+                  return roi;
+              }
+              return nullptr;
+            }
+        };
+
+
+
+        RegionProvider* ROI::region_provider ()
+        {
+          if (!regions)
+            regions.reset (new Regions (*this));
+          return regions.get();
+        }
+
+
+
+        RegionRef ROI::create_region ()
+        {
+          if (!window().image())
+            throw Exception ("an image must be loaded before an ROI can be created");
+          new_slot();
+          vector<RegionRef> all;
+          region_provider()->list_regions (all);
+          if (all.empty())
+            throw Exception ("failed to create a new ROI");
+          return all.back();   // new_slot appends and selects the new ROI
+        }
+#endif
+
+
+
         void ROI::save_slot ()
         {
           QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
@@ -1084,6 +1210,7 @@ namespace MR
           list_view->selectionModel()->clear();
           list_view->selectionModel()->select (list_model->index (list_model->rowCount()-1, 0, QModelIndex()), QItemSelectionModel::Select);
           updateGL ();
+          announce_regions_changed();
         }
 
 
@@ -1120,6 +1247,7 @@ namespace MR
             list_model->remove_item (sel.first());
           }
           updateGL();
+          announce_regions_changed();
           in_insert_mode = false;
         }
 
@@ -1155,6 +1283,7 @@ namespace MR
           roi->undo();
           update_undo_redo();
           updateGL();
+          announce_regions_changed();
           in_insert_mode = false;
         }
 
@@ -1176,6 +1305,7 @@ namespace MR
           roi->redo();
           update_undo_redo();
           updateGL();
+          announce_regions_changed();
           in_insert_mode = false;
         }
 
@@ -1364,6 +1494,29 @@ namespace MR
 
 
 
+        // Anything derived from an ROI (e.g. a tractogram selection rule) refreshes
+        // off this; it is emitted wherever an ROI's contents or the list changes.
+        // Convert the slab thickness (mm) into a number of slices along the axis
+        // being drawn on. 1 reproduces the original single-slice behaviour.
+        int ROI::slab_slices (const ROI_Item& roi, int axis) const
+        {
+          const float mm = slab_thickness_button->value();
+          if (!std::isfinite (mm) || mm <= 0.0f)
+            return 1;
+          const float spacing = roi.header().spacing (axis);
+          if (!(spacing > 0.0f))
+            return 1;
+          return std::max (1, int (std::lround (mm / spacing)));
+        }
+
+
+
+        void ROI::announce_regions_changed ()
+        {
+          emit window().regionsChanged();
+        }
+
+
         void ROI::update_undo_redo ()
         {
           QModelIndexList indices = list_view->selectionModel()->selectedIndexes();
@@ -1501,7 +1654,8 @@ namespace MR
           window().set_orientation (orient);
           window().set_plane (current_axis);
 
-          roi->start (ROI_UndoEntry (*roi, current_axis, current_slice));
+          roi->start (ROI_UndoEntry (*roi, current_axis, current_slice,
+                                     slab_slices (*roi, current_axis)));
 
 
           if (brush_button->isChecked()) {
@@ -1579,6 +1733,8 @@ namespace MR
           in_insert_mode = false;
           update_cursor();
           update_undo_redo();
+          // A stroke has finished: anything derived from this ROI should refresh.
+          emit window().regionsChanged();
           return true;
         }
 

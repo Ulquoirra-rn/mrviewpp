@@ -281,6 +281,24 @@ namespace MR
               shader.stop();
             }
 
+            //! Binary mask of one region, on the atlas grid.
+            MR::Image<bool> region_mask (uint32_t label) const
+            {
+              const auto it = label_to_index.find (label);
+              if (it == label_to_index.end())
+                throw Exception ("no region with label " + str(label) + " in atlas \"" + label_path + "\"");
+              const float wanted = float (it->second);
+
+              MR::Header H (header());
+              H.ndim() = 3;
+              H.datatype() = MR::DataType::Bit;
+              auto out = MR::Image<bool>::scratch (H, name_of_label (label));
+              const ssize_t nx = H.size(0), ny = H.size(1);
+              for (auto l = MR::Loop (0, 3) (out); l; ++l)
+                out.value() = (indices[out.index(0) + nx*(out.index(1) + ny*out.index(2))] == wanted);
+              return out;
+            }
+
             size_t focus_index;   // ROI under the crosshair: stays active
             size_t hover_index;    // ROI under the mouse: active while hovered
             float dim_factor;
@@ -315,6 +333,30 @@ namespace MR
             vector<uint32_t> index_to_label;
             std::map<uint32_t, size_t> label_to_index;
             bool texture_dirty;
+        };
+
+
+
+        // Offers every region of every loaded atlas as a tracking ROI.
+        class Atlas::Regions : public RegionProvider
+        { NOMEMALIGN
+          public:
+            Regions (Atlas& tool) : tool (tool) { }
+
+            std::string provider_name () const override { return "Atlas"; }
+
+            void list_regions (vector<RegionRef>& out) const override;
+            MR::Image<bool> get_region_mask (const RegionRef&) const override;
+            bool resolve (const std::string& key, RegionRef&) const override;
+
+          private:
+            Atlas& tool;
+            // key is "atlas:<label volume path>#<label value>", so it survives a
+            // session reload as long as the same atlas is loaded again.
+            static std::string make_key (const std::string& path, uint32_t label) {
+              return "atlas:" + path + "#" + str(label);
+            }
+            Item* item_for (const RegionRef&, uint32_t& label) const;
         };
 
 
@@ -794,7 +836,11 @@ namespace MR
             +   Argument ("value").type_float (0.0, 1.0)
 
             + Option ("atlas.dim", "Set the opacity of all other regions, relative to atlas.opacity [0-1].").allow_multiple()
-            +   Argument ("value").type_float (0.0, 1.0);
+            +   Argument ("value").type_float (0.0, 1.0)
+
+            + Option ("atlas.export_region", "Write one atlas region out as a binary mask image.").allow_multiple()
+            +   Argument ("name").type_text()
+            +   Argument ("image").type_image_out();
         }
 
 
@@ -822,6 +868,102 @@ namespace MR
             return true;
           }
 
+          if (opt.opt->is ("atlas.export_region")) {
+            const std::string name (opt[0]);
+            // Go through the RegionProvider rather than straight to the Item, so
+            // this exercises exactly the path the tracking tool will use.
+            vector<RegionRef> all;
+            region_provider()->list_regions (all);
+            for (const auto& ref : all) {
+              if (ref.name != name)
+                continue;
+              auto mask = region_provider()->get_region_mask (ref);
+              MR::Header H (mask);
+              H.datatype() = MR::DataType::Bit;
+              auto out = MR::Image<bool>::create (opt[1], H);
+              MR::copy (mask, out);
+              return true;
+            }
+            WARN ("no atlas region named \"" + name + "\" is loaded");
+            return true;
+          }
+
+          return false;
+        }
+
+
+
+        Atlas::~Atlas () { }
+
+
+        RegionProvider* Atlas::region_provider ()
+        {
+          if (!regions)
+            regions.reset (new Regions (*this));
+          return regions.get();
+        }
+
+
+
+        void Atlas::Regions::list_regions (vector<RegionRef>& out) const
+        {
+          for (size_t i = 0; i != tool.atlas_list_model->items.size(); ++i) {
+            const Item* atlas = dynamic_cast<const Item*> (tool.atlas_list_model->items[i].get());
+            if (!atlas)
+              continue;
+            // Only regions actually present in the volume (those with a centroid).
+            for (const auto& kv : atlas->centroids) {
+              const uint32_t label = kv.first;
+              RegionRef ref;
+              ref.provider = provider_name();
+              ref.name = atlas->name_of_label (label);
+              ref.key = make_key (atlas->label_path, label);
+              const auto rgb = atlas->colour_of_index (atlas->index_of (label));
+              ref.colour = QColor (int (rgb[0]*255.0f), int (rgb[1]*255.0f), int (rgb[2]*255.0f));
+              ref.index = label;
+              out.push_back (ref);
+            }
+          }
+        }
+
+
+
+        Atlas::Item* Atlas::Regions::item_for (const RegionRef& ref, uint32_t& label) const
+        {
+          label = uint32_t (ref.index);
+          // The key carries the owning atlas, so the right one is picked even
+          // when several atlases share a label value.
+          for (size_t i = 0; i != tool.atlas_list_model->items.size(); ++i) {
+            Item* atlas = dynamic_cast<Item*> (tool.atlas_list_model->items[i].get());
+            if (atlas && make_key (atlas->label_path, label) == ref.key)
+              return atlas;
+          }
+          return nullptr;
+        }
+
+
+
+        MR::Image<bool> Atlas::Regions::get_region_mask (const RegionRef& ref) const
+        {
+          uint32_t label = 0;
+          Item* atlas = item_for (ref, label);
+          if (!atlas)
+            throw Exception ("atlas region \"" + ref.name + "\" is no longer loaded");
+          return atlas->region_mask (label);
+        }
+
+
+
+        bool Atlas::Regions::resolve (const std::string& key, RegionRef& ref) const
+        {
+          vector<RegionRef> all;
+          list_regions (all);
+          for (const auto& candidate : all) {
+            if (candidate.key == key) {
+              ref = candidate;
+              return true;
+            }
+          }
           return false;
         }
 

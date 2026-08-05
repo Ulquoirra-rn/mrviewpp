@@ -58,6 +58,11 @@ namespace MR
             static void add_commandline_options (MR::App::OptionList& options);
             virtual bool process_commandline_option (const MR::App::ParsedOption& opt) override;
 
+            //! Every loaded SH image, as {display name, on-disk path}.
+            /*! The tracking engine opens its source by path, so images that are
+             *  not file-backed are omitted. */
+            vector<std::pair<std::string, std::string>> list_sh_images () const;
+
           private slots:
             void onPreviewClosed ();
             void sh_open_slot ();
