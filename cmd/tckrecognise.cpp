@@ -14,6 +14,8 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <cmath>
+
 #include "command.h"
 #include "progressbar.h"
 

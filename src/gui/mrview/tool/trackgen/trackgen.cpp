@@ -17,6 +17,8 @@
 #include "gui/mrview/tool/trackgen/trackgen.h"
 
 #include <QFileDialog>
+#include <cmath>
+
 #include <QHeaderView>
 #include <QMenu>
 #include <QMessageBox>

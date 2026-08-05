@@ -17,6 +17,7 @@
 #include "gui/mrview/tool/tractography/bundle_stats.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 #include "transform.h"

@@ -17,6 +17,7 @@
 #include "gui/mrview/tool/trackgen/autotrack_core.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "algo/loop.h"
 #include "transform.h"

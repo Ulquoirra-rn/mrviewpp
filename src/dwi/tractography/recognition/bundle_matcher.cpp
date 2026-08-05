@@ -17,6 +17,8 @@
 #include "dwi/tractography/recognition/bundle_matcher.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace MR
 {

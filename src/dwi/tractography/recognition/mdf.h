@@ -17,6 +17,9 @@
 #ifndef __dwi_tractography_recognition_mdf_h__
 #define __dwi_tractography_recognition_mdf_h__
 
+#include <cmath>
+#include <limits>
+
 #include "types.h"
 #include "dwi/tractography/streamline.h"
 

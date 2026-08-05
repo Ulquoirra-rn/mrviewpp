@@ -14,6 +14,8 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <functional>
+
 #include "gui/mrview/region_source.h"
 
 #include "gui/mrview/window.h"

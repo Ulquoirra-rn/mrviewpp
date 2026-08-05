@@ -14,6 +14,8 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <limits>
+
 #include "dwi/tractography/recognition/quickbundles.h"
 
 namespace MR

@@ -17,6 +17,8 @@
 #ifndef __dwi_tractography_recognition_quickbundles_h__
 #define __dwi_tractography_recognition_quickbundles_h__
 
+#include <limits>
+
 #include "dwi/tractography/recognition/mdf.h"
 
 namespace MR

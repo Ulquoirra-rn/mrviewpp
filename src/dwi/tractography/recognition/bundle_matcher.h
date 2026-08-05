@@ -17,6 +17,8 @@
 #ifndef __dwi_tractography_recognition_bundle_matcher_h__
 #define __dwi_tractography_recognition_bundle_matcher_h__
 
+#include <cmath>
+#include <limits>
 #include <unordered_map>
 
 #include "exception.h"
