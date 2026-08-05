@@ -15,6 +15,6 @@
 //   git tag v3.0.7
 //   git push --follow-tags myfork perspective-fork
 
-#define MRVIEWPP_VERSION "3.0.6"
+#define MRVIEWPP_VERSION "3.1.0"
 
 #endif
