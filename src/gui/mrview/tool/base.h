@@ -21,6 +21,7 @@
 #include "file/json.h"
 
 #include "gui/mrview/window.h"
+#include "gui/mrview/region_source.h"
 #include "gui/projection.h"
 
 #define LAYOUT_SPACING 3
@@ -91,6 +92,10 @@ namespace MR
 
             static void add_commandline_options (MR::App::OptionList& options);
             virtual bool process_commandline_option (const MR::App::ParsedOption& opt);
+
+            //! Regions this tool can offer as tracking ROIs; nullptr if none.
+            /*! Only tools that have actually been opened are ever asked. */
+            virtual RegionProvider* region_provider () { return nullptr; }
 
             virtual QSize sizeHint () const override;
 
@@ -248,6 +253,37 @@ namespace MR
               return dock;
             }
         };
+
+
+
+        //! Find another tool by type, e.g. get_tool<Tool::ODF>().
+        /*! Tools are registered as Action<T>, so the type is recoverable from the
+         *  action alone - which means we can identify the right tool even before
+         *  its dock exists, and open it on demand. Returns nullptr if the tool is
+         *  not registered, or if it is closed and \a create_if_needed is false.
+         *
+         *  This is the typed alternative to matching on the menu name, which is
+         *  what Session::ensure_tool_open has to do (its keys come from the
+         *  session file). */
+        template <class T>
+          T* get_tool (bool create_if_needed = true)
+          {
+            if (!Window::main)
+              return nullptr;
+            QList<QAction*> actions = Window::main->tools()->actions();
+            for (int i = 0; i != actions.size(); ++i) {
+              Action<T>* action = dynamic_cast<Action<T>*> (actions[i]);
+              if (!action)
+                continue;
+              if (!action->dock) {
+                if (!create_if_needed)
+                  return nullptr;
+                actions[i]->trigger();   // opens the dock synchronously
+              }
+              return action->dock ? dynamic_cast<T*> (action->dock->tool) : nullptr;
+            }
+            return nullptr;
+          }
 
 
 

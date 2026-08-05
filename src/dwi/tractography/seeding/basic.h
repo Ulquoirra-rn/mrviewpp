@@ -69,13 +69,24 @@ namespace MR
             SeedMask (const std::string& in) :
               Base (in, "random seeding mask", MAX_TRACKING_SEED_ATTEMPTS_RANDOM),
               mask (in) {
-                volume = get_count (mask) * mask.spacing(0) * mask.spacing(1) * mask.spacing(2);
+                init();
+              }
+
+            //! seed from a mask image already in memory (e.g. built by the GUI)
+            SeedMask (Image<bool> in, const std::string& label) :
+              Base (label, "random seeding mask", MAX_TRACKING_SEED_ATTEMPTS_RANDOM),
+              mask (std::move (in), label) {
+                init();
               }
 
             virtual bool get_seed (Eigen::Vector3f& p) const override;
 
           private:
             Mask mask;
+
+            void init () {
+              volume = get_count (mask) * mask.spacing(0) * mask.spacing(1) * mask.spacing(2);
+            }
 
         };
 
@@ -91,8 +102,17 @@ namespace MR
               num (num_per_voxel),
               inc (0),
               expired (false) {
-                count = get_count (mask) * num_per_voxel;
-                mask.index(0) = 0; mask.index(1) = 0; mask.index(2) = -1;
+                init();
+              }
+
+            //! seed from a mask image already in memory (e.g. built by the GUI)
+            Random_per_voxel (Image<bool> in, const std::string& label, const size_t num_per_voxel) :
+              Base (label, "random per voxel", MAX_TRACKING_SEED_ATTEMPTS_FIXED),
+              mask (std::move (in), label),
+              num (num_per_voxel),
+              inc (0),
+              expired (false) {
+                init();
               }
 
             virtual bool get_seed (Eigen::Vector3f& p) const override;
@@ -104,6 +124,11 @@ namespace MR
 
             mutable uint32_t inc;
             mutable bool expired;
+
+            void init () {
+              count = get_count (mask) * num;
+              mask.index(0) = 0; mask.index(1) = 0; mask.index(2) = -1;
+            }
         };
 
 
@@ -115,6 +140,18 @@ namespace MR
             Grid_per_voxel (const std::string& in, const size_t os_factor) :
               Base (in, "grid per voxel", MAX_TRACKING_SEED_ATTEMPTS_FIXED),
               mask (in),
+              os (os_factor),
+              pos (os, os, os),
+              offset (-0.5 + (1.0 / (2*os))),
+              step (1.0 / os),
+              expired (false) {
+                count = get_count (mask) * Math::pow3 (os_factor);
+              }
+
+            //! seed from a mask image already in memory (e.g. built by the GUI)
+            Grid_per_voxel (Image<bool> in, const std::string& label, const size_t os_factor) :
+              Base (label, "grid per voxel", MAX_TRACKING_SEED_ATTEMPTS_FIXED),
+              mask (std::move (in), label),
               os (os_factor),
               pos (os, os, os),
               offset (-0.5 + (1.0 / (2*os))),

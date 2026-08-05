@@ -87,6 +87,16 @@ namespace MR {
       Image<bool> Mask::__get_mask (const std::string& name)
       {
         auto data = Image<bool>::open (name);
+        return __get_mask (data, name);
+      }
+
+
+
+      // Shared by both Mask constructors: crop to the bounding box of the
+      // non-zero voxels (plus a one-voxel margin) and copy into a scratch image.
+      // `data` is by value because iterating it moves its indices.
+      Image<bool> Mask::__get_mask (Image<bool> data, const std::string& name)
+      {
         vector<size_t> bottom (3, 0), top (3, 0);
         std::fill_n (bottom.begin(), 3, std::numeric_limits<size_t>::max());
 
@@ -118,7 +128,7 @@ namespace MR {
         auto sub = Adapter::make<Adapter::Subset> (data, bottom, top);
         Header mask_header (sub);
         mask_header.ndim() = 3;
-        auto mask = Image<bool>::scratch (mask_header, data.name());
+        auto mask = Image<bool>::scratch (mask_header, name);
         threaded_copy (sub, mask, 0, 3);
         return mask;
       }
