@@ -17,6 +17,9 @@
 #ifndef __gui_mrview_tool_tractography_h__
 #define __gui_mrview_tool_tractography_h__
 
+#include "dwi/tractography/properties.h"
+#include "dwi/tractography/streamline.h"
+
 #include "gui/mrview/tool/base.h"
 #include "gui/color_button.h"
 #include "gui/projection.h"
@@ -61,6 +64,19 @@ namespace MR
             static void add_commandline_options (MR::App::OptionList& options);
             virtual bool process_commandline_option (const MR::App::ParsedOption& opt) override;
 
+            // Adopt streamlines generated in-process (Track generation tool).
+            // Model is only visible inside tractography.cpp, so this is the seam.
+            Tractogram* add_tractogram_from_memory (
+                const vector<MR::DWI::Tractography::Streamline<float>>&,
+                const MR::DWI::Tractography::Properties&,
+                const std::string& display_name,
+                uint64_t total_attempted = 0,
+                //! Give it a distinct solid colour rather than directional colouring.
+                /*! Wanted when several related tractograms need telling apart (one
+                 *  per atlas bundle, a split-off selection); not wanted for a plain
+                 *  tracking run, where directional colouring is more informative. */
+                bool solid_colour = true);
+
             std::string session_key () const override { return "tracts"; }
             void get_session (nlohmann::json&) const override;
             void set_session (const nlohmann::json&) override;
@@ -100,8 +116,37 @@ namespace MR
             void colour_button_slot();
             void geom_type_selection_slot (int);
             void selection_changed_slot (const QItemSelection &, const QItemSelection &);
+            void edit_enable_slot (bool);
+            void select_by_region_slot ();
+            void invert_selection_slot ();
+            void select_all_streamlines_slot ();
+            void keep_selection_slot ();
+            void delete_selection_slot ();
+            void split_selection_slot ();
+            void clear_rules_slot ();
+            void regions_changed_slot ();
+            void reapply_rules_slot ();
+            void statistics_slot ();
+            void profile_slot ();
 
           protected:
+            QCheckBox* edit_enable_box;
+            QPushButton *select_region_button, *invert_button, *select_all_button;
+            QPushButton *keep_button, *delete_button, *split_button;
+            QPushButton *stats_button, *profile_button;
+            QLabel* edit_status_label;
+            QListWidget* rule_list;
+            QPushButton* clear_rules_button;
+            // Coalesces bursts of region edits into one re-evaluation.
+            QTimer* rule_refresh_timer;
+
+            //! Tractograms currently selected in the list.
+            vector<Tractogram*> selected_tractograms ();
+            void update_edit_controls ();
+            void refresh_rule_list ();
+            //! Dim every region acting as "avoids"; restore the rest.
+            void apply_region_opacities (const vector<RegionRef>& released = vector<RegionRef>());
+
             AdjustButton* slab_entry;
             QMenu* track_option_menu;
 

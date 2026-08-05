@@ -21,6 +21,7 @@
 #include "file/path.h"
 #include "dwi/tractography/file.h"
 #include "dwi/tractography/file_trk.h"
+#include "dwi/tractography/roi.h"
 #include "dwi/tractography/file_trx.h"
 #include "dwi/tractography/file_dicom.h"
 #include "dwi/tractography/properties.h"
@@ -692,6 +693,97 @@ namespace MR
 
 
 
+        namespace
+        {
+          // DWI::Tractography::Properties is not copyable, because Seeding::List
+          // owns its seeders and deletes its copy constructor. Everything that
+          // describes a *finished* tractogram is copyable though, so snapshot
+          // that and drop the seeders; their names are preserved separately as
+          // prior_rois entries by the caller.
+          void snapshot_properties (const DWI::Tractography::Properties& from,
+                                    DWI::Tractography::Properties& to)
+          {
+            to.clear();
+            static_cast<MR::KeyValues&> (to) = static_cast<const MR::KeyValues&> (from);
+            to.comments = from.comments;
+            to.prior_rois = from.prior_rois;
+            to.include = from.include;
+            to.exclude = from.exclude;
+            to.mask = from.mask;
+            to.ordered_include = from.ordered_include;
+          }
+        }
+
+
+
+        void Tractogram::load_tracks_from_memory (const vector<DWI::Tractography::Streamline<float>>& tracks,
+                                                  const DWI::Tractography::Properties& props,
+                                                  uint64_t total_attempted)
+        {
+          // Make sure to set graphics context!
+          // We're setting up vertex array objects
+          GL::Context::Grab context;
+          GL::assert_context_is_current();
+
+          snapshot_properties (props, properties);
+          memory_tracks = tracks;
+          memory_total_count = std::max (total_attempted, uint64_t (tracks.size()));
+
+          vector<Eigen::Vector3f> buffer;
+          vector<GLint> starts;
+          vector<GLint> sizes;
+          size_t tck_count = 0;
+
+          on_FOV_changed();
+
+          // Same padding/chunking as load_tracks() above: pad both ends so the
+          // first and last vertex survive a downsampling stride > 1.
+          for (const auto& tck : memory_tracks) {
+
+            const size_t N = tck.size();
+            if (!N) continue;
+
+            for (size_t i = 0; i < track_padding; ++i)
+              buffer.push_back (tck.front());
+
+            starts.push_back (buffer.size() - 1);
+
+            buffer.insert (buffer.end(), tck.begin(), tck.end());
+
+            for (size_t i = 0; i < track_padding; ++i)
+              buffer.push_back (tck.back());
+
+            sizes.push_back (N);
+            tck_count++;
+            if (buffer.size() >= MAX_BUFFER_SIZE)
+              load_tracks_onto_GPU (buffer, starts, sizes, tck_count);
+
+            endpoint_tangents.push_back ((tck.back() - tck.front()).normalized());
+          }
+          if (buffer.size())
+            load_tracks_onto_GPU (buffer, starts, sizes, tck_count);
+          GL::assert_context_is_current();
+        }
+
+
+
+        void Tractogram::save_to_file (const std::string& path) const
+        {
+          if (memory_tracks.empty())
+            throw Exception ("this tractogram has no in-memory streamlines to save");
+          DWI::Tractography::Properties props;
+          snapshot_properties (properties, props);
+          DWI::Tractography::Writer<float> writer (path, props);
+          for (const auto& tck : memory_tracks)
+            writer (tck);
+          // Writer only counts what it is handed, so restore the number of
+          // streamlines that were actually attempted (tckgen's total_count).
+          for (uint64_t i = memory_tracks.size(); i < memory_total_count; ++i)
+            writer.skip();
+        }
+
+
+
         void Tractogram::get_filtered_streamlines (FilteredTracks& out) const
         {
           out.tracks.clear();
@@ -699,6 +791,14 @@ namespace MR
           out.dps.clear();
           out.per_vertex = out.per_streamline = false;
           out.source_name = Path::basename (filename);
+
+          // Streamlines generated in-process have no file to re-read; they are
+          // already on the CPU. No scalar file can be attached to them yet, so
+          // there is nothing to threshold on either.
+          if (memory_tracks.size()) {
+            out.tracks = memory_tracks;
+            return;
+          }
 
           // Which scalar file (if any) drives the active threshold.
           std::string scalar_file;
@@ -1198,6 +1298,229 @@ namespace MR
           }
 
           load_threshold_scalars_from_values (flat, "trx:" + entry);
+        }
+
+
+
+        void Tractogram::enable_editing ()
+        {
+          if (cpu_cache)
+            return;
+          std::unique_ptr<FilteredTracks> cache (new FilteredTracks);
+
+          // get_filtered_streamlines() drops streamlines that fail the active
+          // threshold, which would desynchronise CPU indices from the GPU
+          // buffers. Turn thresholding off while filling the cache.
+          const TrackThresholdType saved = threshold_type;
+          threshold_type = TrackThresholdType::None;
+          try {
+            get_filtered_streamlines (*cache);
+          } catch (Exception&) {
+            threshold_type = saved;
+            throw;
+          }
+          threshold_type = saved;
+
+          cpu_cache = std::move (cache);
+          selected_flags.assign (cpu_cache->tracks.size(), 1);
+        }
+
+
+
+        void Tractogram::disable_editing ()
+        {
+          cpu_cache.reset();
+          selected_flags.clear();
+          rules.clear();   // they cannot be evaluated without the CPU cache
+        }
+
+
+
+        const vector<DWI::Tractography::Streamline<float>>& Tractogram::cpu_tracks () const
+        {
+          if (!cpu_cache)
+            throw Exception ("editing is not enabled for this tractogram");
+          return cpu_cache->tracks;
+        }
+
+
+
+        void Tractogram::set_selection (const vector<uint8_t>& flags)
+        {
+          if (!cpu_cache)
+            throw Exception ("editing is not enabled for this tractogram");
+          if (flags.size() != cpu_cache->tracks.size())
+            throw Exception ("selection size does not match the number of streamlines");
+          selected_flags = flags;
+          upload_selection();
+        }
+
+
+
+        void Tractogram::clear_selection ()
+        {
+          if (!cpu_cache)
+            return;
+          selected_flags.assign (cpu_cache->tracks.size(), 1);
+          set_threshold_type (TrackThresholdType::None);
+          erase_threshold_scalar_data();
+        }
+
+
+
+        void Tractogram::upload_selection ()
+        {
+          if (!cpu_cache)
+            return;
+          // One value per vertex, expanded from the per-streamline flags.
+          vector<float> flat;
+          size_t total = 0;
+          for (const auto& tck : cpu_cache->tracks)
+            total += tck.size();
+          flat.reserve (total);
+          for (size_t i = 0; i != cpu_cache->tracks.size(); ++i) {
+            const float value = selected_flags[i] ? 1.0f : 0.0f;
+            for (size_t v = 0; v != cpu_cache->tracks[i].size(); ++v)
+              flat.push_back (value);
+          }
+          load_threshold_scalars_from_values (flat, "selection");
+          set_threshold_type (TrackThresholdType::SeparateFile);
+          set_use_discard_lower (true);
+          set_use_discard_upper (false);
+          lessthan = 0.5f;
+        }
+
+
+
+        vector<DWI::Tractography::Streamline<float>> Tractogram::selected_tracks () const
+        {
+          vector<DWI::Tractography::Streamline<float>> out;
+          if (!cpu_cache)
+            return out;
+          for (size_t i = 0; i != cpu_cache->tracks.size(); ++i)
+            if (selected_flags[i])
+              out.push_back (cpu_cache->tracks[i]);
+          return out;
+        }
+
+
+
+        void Tractogram::add_selection_rule (const RegionRef& region, bool want_inside)
+        {
+          // Replace any existing rule on the same region, so picking the opposite
+          // sense for a region flips it rather than contradicting itself.
+          for (auto& rule : rules) {
+            if (rule.region.key == region.key) {
+              rule.want_inside = want_inside;
+              return;
+            }
+          }
+          rules.push_back ({ region, want_inside });
+        }
+
+
+
+        void Tractogram::clear_selection_rules ()
+        {
+          rules.clear();
+        }
+
+
+
+        size_t Tractogram::apply_selection_rules ()
+        {
+          if (!cpu_cache)
+            throw Exception ("editing is not enabled for this tractogram");
+
+          if (rules.empty()) {
+            clear_selection();
+            return 0;
+          }
+
+          // Materialise each region here: RegionProvider requires the GUI thread,
+          // since the ROI editor keeps its mask only in a GL texture.
+          vector<std::pair<MR::DWI::Tractography::ROI, bool>> criteria;
+          size_t unavailable = 0;
+          for (const auto& rule : rules) {
+            RegionProvider* provider = provider_for (rule.region);
+            if (!provider) {
+              ++unavailable;
+              continue;
+            }
+            try {
+              criteria.push_back ({ MR::DWI::Tractography::ROI (provider->get_region_mask (rule.region),
+                                                               rule.region.label()),
+                                    rule.want_inside });
+            } catch (Exception&) {
+              // An emptied region cannot be turned into an ROI; treat it as
+              // unavailable rather than failing the whole re-application.
+              ++unavailable;
+            }
+          }
+
+          const auto& tracks = cpu_cache->tracks;
+          vector<uint8_t> flags (tracks.size(), 1);
+          for (size_t i = 0; i != tracks.size(); ++i) {
+            for (const auto& criterion : criteria) {
+              bool touches = false;
+              for (const auto& p : tracks[i]) {
+                if (criterion.first.contains (p)) { touches = true; break; }
+              }
+              if (touches != criterion.second) { flags[i] = 0; break; }
+            }
+          }
+          selected_flags = flags;
+          upload_selection();
+          return unavailable;
+        }
+
+
+
+        void Tractogram::apply_selection (bool keep)
+        {
+          if (!cpu_cache)
+            throw Exception ("editing is not enabled for this tractogram");
+          vector<DWI::Tractography::Streamline<float>> kept;
+          for (size_t i = 0; i != cpu_cache->tracks.size(); ++i)
+            if (bool (selected_flags[i]) == keep)
+              kept.push_back (cpu_cache->tracks[i]);
+          if (kept.empty())
+            throw Exception ("that would remove every streamline");
+
+          // Re-upload from scratch: the GPU buffers, track sizes and tangents all
+          // describe the old streamline set.
+          // The rules describe the old streamline set, and re-applying them after a
+          // destructive edit would just re-select what survived.
+          rules.clear();
+          erase_threshold_scalar_data();
+          erase_colour_data();
+          erase_intensity_scalar_data();
+          {
+            GL::Context::Grab context;
+            if (vertex_buffers.size())
+              gl::DeleteBuffers (vertex_buffers.size(), &vertex_buffers[0]);
+            if (vertex_array_objects.size())
+              gl::DeleteVertexArrays (vertex_array_objects.size(), &vertex_array_objects[0]);
+            if (element_buffers.size())
+              gl::DeleteBuffers (element_buffers.size(), &element_buffers[0]);
+          }
+          vertex_buffers.clear();
+          vertex_array_objects.clear();
+          element_buffers.clear();
+          element_counts.clear();
+          track_starts.clear();
+          track_sizes.clear();
+          original_track_starts.clear();
+          original_track_sizes.clear();
+          num_tracks_per_buffer.clear();
+          endpoint_tangents.clear();
+          set_threshold_type (TrackThresholdType::None);
+
+          DWI::Tractography::Properties props;
+          snapshot_properties (properties, props);
+          load_tracks_from_memory (kept, props, memory_total_count);
+          cpu_cache.reset();
+          enable_editing();
         }
 
 

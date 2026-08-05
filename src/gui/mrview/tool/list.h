@@ -26,6 +26,9 @@
 #include "gui/mrview/tool/tractography/tractography.h"
 #include "gui/mrview/tool/mesh.h"
 #include "gui/mrview/tool/atlas.h"
+#ifndef MRTRIX_WASM
+#include "gui/mrview/tool/trackgen/trackgen.h"
+#endif
 #include "gui/mrview/tool/session.h"
 #include "gui/mrview/tool/connectome/connectome.h"
 
@@ -42,6 +45,9 @@ TOOL(ROI, ROI editor, View & edit regions of interest)
 TOOL(Tractography, Tractography, Display tracks over the current image)
 TOOL(Mesh, Mesh display, Display surface meshes over the current image)
 TOOL(Atlas, Atlas, Display a labelled atlas with region names under the cursor)
+#ifndef MRTRIX_WASM
+TOOL(TrackGen, Track generation, Generate streamlines from regions or from a tract atlas)
+#endif
 TOOL(ODF, ODF display, Display orientation density functions)
 TOOL(Fixel, Fixel plot, Plot fixel images)
 TOOL(Connectome, Connectome, Plot connectome properties)

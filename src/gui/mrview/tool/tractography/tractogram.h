@@ -18,6 +18,7 @@
 #define __gui_mrview_tool_tractogram_h__
 
 #include "gui/mrview/displayable.h"
+#include "gui/mrview/region_source.h"
 #include "dwi/tractography/properties.h"
 #include "dwi/tractography/streamline.h"
 #include "gui/mrview/tool/tractography/tractography.h"
@@ -60,6 +61,57 @@ namespace MR
             }
 
             void load_tracks();
+
+            // Upload streamlines that were generated in-process rather than read
+            // from a file (see the Track generation tool). The points are also
+            // retained on the CPU, so the tractogram can be saved and edited
+            // without a source file to re-read.
+            void load_tracks_from_memory (const vector<MR::DWI::Tractography::Streamline<float>>&,
+                                          const MR::DWI::Tractography::Properties&,
+                                          uint64_t total_attempted = 0);
+            bool is_in_memory () const { return memory_tracks.size(); }
+
+            // --- selection / editing ---
+            // Selection is rendered by reusing the per-streamline threshold path
+            // rather than a new shader: each streamline gets a scalar of 1 or 0
+            // and the threshold sits at 0.5, so deselected streamlines vanish.
+
+            //! Number of streamlines currently held on the CPU (0 if not cached).
+            size_t num_cpu_tracks () const { return cpu_cache ? cpu_cache->tracks.size() : 0; }
+            //! Populate the CPU cache, re-reading from file if necessary.
+            /*! Expensive for large tractograms; call only when editing starts. */
+            void enable_editing ();
+            void disable_editing ();
+            bool editing_enabled () const { return bool (cpu_cache); }
+            const vector<MR::DWI::Tractography::Streamline<float>>& cpu_tracks () const;
+
+            //! Per-streamline selection flags; empty until editing is enabled.
+            const vector<uint8_t>& selection () const { return selected_flags; }
+            void set_selection (const vector<uint8_t>&);
+            void clear_selection ();
+            //! Discard the unselected (keep=true) or selected (keep=false) streamlines.
+            void apply_selection (bool keep);
+            //! The selected streamlines, for splitting into a new tractogram.
+            vector<MR::DWI::Tractography::Streamline<float>> selected_tracks () const;
+
+            //! A standing "passes through" / "avoids" criterion on a region.
+            /*! Rules are kept rather than baked into the selection, so that they
+             *  can be re-evaluated when the region itself is edited - drawing more
+             *  of an avoid region should immediately deselect what it now covers. */
+            struct SelectionRule { NOMEMALIGN
+              RegionRef region;
+              bool want_inside;    //!< true = passes through, false = avoids
+            };
+            const vector<SelectionRule>& selection_rules () const { return rules; }
+            void add_selection_rule (const RegionRef&, bool want_inside);
+            void clear_selection_rules ();
+            //! Recompute the selection from the rules. GUI thread only.
+            /*! Rules whose owning tool has gone away are skipped, and their count
+             *  returned, so the caller can say so rather than silently ignoring them. */
+            size_t apply_selection_rules ();
+
+            const vector<MR::DWI::Tractography::Streamline<float>>& in_memory_tracks () const { return memory_tracks; }
+            void save_to_file (const std::string& path) const;
 
             void load_end_colours();
             void load_intensity_track_scalars (const std::string&);
@@ -171,6 +223,18 @@ namespace MR
             vector<GLuint> intensity_scalar_buffers;
             vector<GLuint> threshold_scalar_buffers;
             MR::DWI::Tractography::Properties properties;
+            // Non-empty only for tractograms generated in-process; the file-backed
+            // path keeps its points on the GPU only and re-reads on demand.
+            vector<MR::DWI::Tractography::Streamline<float>> memory_tracks;
+            // CPU-side copy used for editing and statistics. Opt-in, because a
+            // large tractogram costs hundreds of MB.
+            std::unique_ptr<FilteredTracks> cpu_cache;
+            vector<uint8_t> selected_flags;
+            vector<SelectionRule> rules;
+            void upload_selection ();
+            // Streamlines attempted (accepted + rejected), so a saved .tck carries
+            // the same total_count a tckgen run would have written.
+            uint64_t memory_total_count = 0;
             vector<vector<GLint> > track_starts;
             vector<vector<GLint> > track_sizes;
             vector<vector<GLint> > original_track_sizes;
