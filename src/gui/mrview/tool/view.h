@@ -17,6 +17,10 @@
 #ifndef __gui_mrview_tool_view_h__
 #define __gui_mrview_tool_view_h__
 
+#include <map>
+
+#include <QListWidget>
+
 #include "gui/mrview/tool/base.h"
 #include "gui/mrview/mode/base.h"
 #include "gui/mrview/spin_box.h"
@@ -33,6 +37,9 @@ namespace MR
 
       namespace Tool
       {
+
+        class Tractogram;
+
 
 
         class ClipPlane
@@ -70,6 +77,12 @@ namespace MR
             virtual void closeEvent (QCloseEvent* event) override;
 
           private slots:
+            void atlas_state_changed ();
+            void atlas_filter_changed (const QString&);
+            void atlas_item_changed (QListWidgetItem*);
+            void atlas_context_menu (const QPoint&);
+            void atlas_align_clicked ();
+
             void onImageChanged ();
             void onImageVisibilityChanged (bool);
             void onFocusChanged ();
@@ -83,6 +96,7 @@ namespace MR
             void onSetScaling ();
             void onScalingChanged ();
             void onSetTransparency ();
+            void onSetXray ();
             void onSetFOV ();
             void onCheckThreshold (bool);
             void onModeChanged ();
@@ -111,6 +125,17 @@ namespace MR
             void light_box_toggle_volumes_slot (bool);
 
           private:
+            // Built-in tract atlas: a filterable list of the bundles, of which only
+            // the ticked ones are loaded as tractograms. The atlas holds 87, which
+            // is far too many to put in the tractography list all at once.
+            QGroupBox* atlas_box;
+            QLabel* atlas_status;
+            QLineEdit* atlas_filter;
+            QListWidget* atlas_list;
+            QPushButton* atlas_align_button;
+            std::map<std::string, Tractogram*> atlas_loaded;
+            void update_atlas_list ();
+
             QPushButton *hide_button;
             QPushButton *copy_focus_button;
             QPushButton *copy_voxel_button;
@@ -123,6 +148,7 @@ namespace MR
             QComboBox *plane_combobox;
             QGroupBox *volume_box, *transparency_box, *threshold_box, *clip_box, *lightbox_box;
             QSlider *opacity;
+            QSlider *xray;
             QMenu *clip_planes_option_menu, *clip_planes_reset_submenu;
             QAction *clip_planes_new_axial_action, *clip_planes_new_sagittal_action, *clip_planes_new_coronal_action;
             QAction *clip_planes_reset_axial_action, *clip_planes_reset_sagittal_action, *clip_planes_reset_coronal_action;

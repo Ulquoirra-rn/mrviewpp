@@ -53,6 +53,13 @@ mkdir -p "$ROOT/DEBIAN" \
 # The ELF + our own core library live in a private dir; a wrapper on the PATH
 # points the loader at it (Qt itself comes from the system packages).
 cp bin/mrview "$ROOT/usr/lib/mrview++/mrview"
+# Built-in tract atlas: antsRegistration sits beside the executable (where
+# AtlasTemplate::ants_path looks first) and the data beside it in share/.
+[ -x bin/antsRegistration ] && cp bin/antsRegistration "$ROOT/usr/lib/mrview++/"
+mkdir -p "$ROOT/usr/lib/mrview++/share/mrviewpp"
+cp share/mrtrix3/mrviewpp/* "$ROOT/usr/lib/mrview++/share/mrviewpp/" 2>/dev/null || true
+[ -f packaging/ANTS_LICENSE.txt ] && install -Dm644 packaging/ANTS_LICENSE.txt \
+  "$ROOT/usr/share/doc/mrview++/ANTS_LICENSE.txt"
 cp -a lib/*.so* "$ROOT/usr/lib/mrview++/" 2>/dev/null || true
 
 cat > "$ROOT/usr/bin/mrview++" <<'EOF'

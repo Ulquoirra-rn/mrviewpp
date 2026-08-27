@@ -37,7 +37,15 @@ namespace MR
             Q_OBJECT
 
           public:
+
+            //! Docked on the left, not with the rest.
+            /*! Left because saving and restoring a scene is done while the panels
+             *  that make it up are open. */
+            static Qt::DockWidgetArea preferred_dock_area () { return Qt::LeftDockWidgetArea; }
             Session (Dock* parent);
+            static void add_commandline_options (MR::App::OptionList& options);
+            bool process_commandline_option (const MR::App::ParsedOption& opt) override;
+
 
           private slots:
             void save_slot ();

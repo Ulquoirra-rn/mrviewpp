@@ -16,6 +16,16 @@
 
 #include "gui/mrview/tool/view.h"
 
+#include <QColorDialog>
+#include <QDockWidget>
+#include <QLineEdit>
+#include <QMenu>
+
+#include "file/path.h"
+#include "gui/mrview/atlas_registration.h"
+#include "gui/mrview/tool/tractography/tractography.h"
+#include "gui/mrview/tool/tractography/tractogram.h"
+
 #include "mrtrix.h"
 #include "math/math.h"
 #include "file/config.h"
@@ -303,12 +313,48 @@ namespace MR
           hlayout = new HBoxLayout;
           vlayout->addLayout (hlayout);
 
-          hlayout->addWidget (new QLabel ("alpha"));
+          QLabel* alpha_label = new QLabel ("alpha");
+          alpha_label->setToolTip (tr (
+                "How opaque the image itself is, sample by sample, as the ray passes\n"
+                "through it.\n\n"
+                "This is a property of the render: lowering it lets deeper material\n"
+                "contribute, so the picture changes rather than fades - a low alpha\n"
+                "shows more of the inside of the volume, not less of the volume. Nor\n"
+                "does it let anything through that the image is in front of; an overlay\n"
+                "behind image material is still occluded by it, in proportion.\n\n"
+                "x-ray below is the other question: how much of the finished render to\n"
+                "show at all, relative to what is drawn inside it. Alpha decides what\n"
+                "the volume looks like; x-ray decides whether you are looking at the\n"
+                "volume or at its contents."));
+          hlayout->addWidget (alpha_label);
           opacity = new QSlider (Qt::Horizontal);
+          opacity->setToolTip (alpha_label->toolTip());
           opacity->setRange (0, 1000);
           opacity->setValue (1000);
           connect (opacity, SIGNAL (valueChanged(int)), this, SLOT (onSetTransparency()));
           hlayout->addWidget (opacity);
+
+          hlayout = new HBoxLayout;
+          vlayout->addLayout (hlayout);
+          QLabel* xray_label = new QLabel ("x-ray");
+          xray_label->setToolTip (tr (
+                "See through a volume render, so what is inside it shows.\n\n"
+                "Scales the image's own contribution and nothing else: tracts and\n"
+                "meshes drawn inside the render come through in proportion, and so\n"
+                "do overlays. At 100% the render is gone and only its contents are\n"
+                "left; at 0% nothing changes.\n\n"
+                "Not the same as alpha above, which changes how opaque the image is\n"
+                "sample by sample and so changes what the render shows. x-ray leaves\n"
+                "the render exactly as it is and fades it against its contents.\n\n"
+                "Applies to the Volume mode and to the volume pane in the ortho view."));
+          hlayout->addWidget (xray_label);
+          xray = new QSlider (Qt::Horizontal);
+          xray->setRange (0, 100);
+          xray->setValue (int (100.0f * Mode::Volume::xray_strength));
+          xray->setToolTip (xray_label->toolTip());
+          connect (xray, SIGNAL (valueChanged(int)), this, SLOT (onSetXray()));
+          set_slider_steps (xray);
+          hlayout->addWidget (xray);
 
 
           threshold_box = new QGroupBox ("Thresholds");
@@ -467,14 +513,52 @@ namespace MR
 
           clip_planes_option_menu->addSeparator();
 
+          // Built-in tract atlas
+          atlas_box = new QGroupBox (tr ("Tract atlas"));
+          main_box->addWidget (atlas_box);
+          VBoxLayout* atlas_layout = new VBoxLayout;
+          atlas_box->setLayout (atlas_layout);
+
+          atlas_status = new QLabel (tr ("no image aligned"));
+          atlas_status->setWordWrap (true);
+          atlas_layout->addWidget (atlas_status);
+
+          atlas_align_button = new QPushButton (tr ("Align to current image"));
+          atlas_align_button->setToolTip (tr ("Align the built-in atlas to the image being viewed"));
+          connect (atlas_align_button, SIGNAL (clicked()), this, SLOT (atlas_align_clicked()));
+          atlas_layout->addWidget (atlas_align_button);
+
+          atlas_filter = new QLineEdit;
+          make_search_box (atlas_filter, tr ("Search bundles - e.g. CST, _L"));
+          atlas_filter->setClearButtonEnabled (true);
+          connect (atlas_filter, SIGNAL (textChanged (const QString&)),
+                   this, SLOT (atlas_filter_changed (const QString&)));
+          atlas_layout->addWidget (atlas_filter);
+
+          atlas_list = new QListWidget;
+          atlas_list->setSelectionMode (QAbstractItemView::NoSelection);
+          atlas_list->setUniformItemSizes (true);
+          // Enough to browse without the panel taking over; the list scrolls.
+          atlas_list->setMinimumHeight (140);
+          connect (atlas_list, SIGNAL (itemChanged (QListWidgetItem*)),
+                   this, SLOT (atlas_item_changed (QListWidgetItem*)));
+          atlas_list->setContextMenuPolicy (Qt::CustomContextMenu);
+          connect (atlas_list, SIGNAL (customContextMenuRequested (const QPoint&)),
+                   this, SLOT (atlas_context_menu (const QPoint&)));
+          atlas_layout->addWidget (atlas_list);
+
+          connect (&window().atlas_registration(), SIGNAL (changed()),
+                   this, SLOT (atlas_state_changed()));
+          atlas_state_changed();
+
           // Light box view options
           init_lightbox_gui (main_box);
 
           main_box->addStretch ();
 
           ortho_view_in_row_check_box->setVisible (false);
-          transparency_box->setVisible (false);
-          threshold_box->setVisible (false);
+          transparency_box->setVisible (true);
+          threshold_box->setVisible (true);
           clip_box->setVisible (false);
           lightbox_box->setVisible (false);
         }
@@ -521,6 +605,179 @@ namespace MR
         void View::closeEvent (QCloseEvent*)
         {
           window().disconnect (this);
+        }
+
+
+
+        void View::atlas_align_clicked ()
+        {
+          window().request_atlas_registration (true);
+        }
+
+
+
+        void View::atlas_filter_changed (const QString&)
+        {
+          update_atlas_list();
+        }
+
+
+
+        void View::update_atlas_list ()
+        {
+          auto& registration = window().atlas_registration();
+          const QString filter = atlas_filter->text().trimmed();
+
+          // Rebuilding wholesale would fight the user's ticks, so only the visible
+          // set changes here; ticked state lives in atlas_loaded.
+          atlas_list->blockSignals (true);
+          atlas_list->clear();
+          for (const auto& bundle : registration.catalogue()) {
+            const QString name = qstr (bundle.name);
+            // The category is searchable too, so "association" narrows to that
+            // group even though the list shows bundle names alone.
+            const QString category = qstr (bundle.category);
+            if (filter.size() && !name.contains (filter, Qt::CaseInsensitive)
+                              && !category.contains (filter, Qt::CaseInsensitive))
+              continue;
+            QListWidgetItem* item = new QListWidgetItem (name, atlas_list);
+            item->setFlags (item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState (atlas_loaded.count (bundle.name) ? Qt::Checked : Qt::Unchecked);
+            item->setToolTip (bundle.category.size() ? category : tr ("built-in atlas"));
+          }
+          atlas_list->blockSignals (false);
+        }
+
+
+
+        void View::atlas_state_changed ()
+        {
+          const auto& registration = window().atlas_registration();
+          switch (registration.state()) {
+            case AtlasRegistration::State::Idle:
+              atlas_status->setText (tr ("not aligned"));
+              break;
+            case AtlasRegistration::State::Running:
+              atlas_status->setText (tr ("aligning..."));
+              break;
+            case AtlasRegistration::State::Ready:
+              atlas_status->setText (qstr (Path::basename (registration.registered_image()) +
+                                           " - " + registration.note()));
+              break;
+            case AtlasRegistration::State::Failed:
+              atlas_status->setText (qstr ("not aligned: " + registration.note()));
+              break;
+          }
+          atlas_align_button->setEnabled (!registration.busy());
+          atlas_list->setEnabled (registration.state() == AtlasRegistration::State::Ready);
+
+          // A new registration invalidates whatever was loaded from the old one.
+          if (registration.state() != AtlasRegistration::State::Ready && atlas_loaded.size()) {
+            if (Tractography* tractography = get_tool<Tractography> (false)) {
+              for (auto& loaded : atlas_loaded)
+                tractography->remove_atlas_bundle (loaded.second);
+            }
+            atlas_loaded.clear();
+          }
+          update_atlas_list();
+        }
+
+
+
+        void View::atlas_context_menu (const QPoint& position)
+        {
+          QListWidgetItem* item = atlas_list->itemAt (position);
+          if (!item)
+            return;
+          const std::string name = item->text().toStdString();
+          auto loaded = atlas_loaded.find (name);
+          if (loaded == atlas_loaded.end()) {
+            // Nothing to colour until the bundle is actually shown.
+            return;
+          }
+
+          QMenu menu (this);
+          QAction* directional = menu.addAction (tr ("Colour by direction"));
+          QAction* solid = menu.addAction (tr ("Set colour..."));
+          QAction* chosen = menu.exec (atlas_list->mapToGlobal (position));
+          if (!chosen)
+            return;
+
+          Tractography* tractography = get_tool<Tractography> (false);
+          if (!tractography)
+            return;
+          if (chosen == directional) {
+            tractography->set_atlas_bundle_colour (loaded->second, QColor());
+          } else if (chosen == solid) {
+            const QColor colour = QColorDialog::getColor (Qt::white, this, tr ("Bundle colour"));
+            if (colour.isValid())
+              tractography->set_atlas_bundle_colour (loaded->second, colour);
+          }
+        }
+
+
+
+        void View::atlas_item_changed (QListWidgetItem* item)
+        {
+          if (!item)
+            return;
+          const std::string name = item->text().toStdString();
+          auto& registration = window().atlas_registration();
+
+          if (item->checkState() == Qt::Checked) {
+            if (atlas_loaded.count (name))
+              return;
+            // Reading a bundle of an averaged atlas can take a moment: it is only
+            // read when it is actually asked for.
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            const auto& tracks = registration.bundle (name);
+            QApplication::restoreOverrideCursor();
+            if (tracks.empty()) {
+              item->setCheckState (Qt::Unchecked);
+              return;
+            }
+            // The Tracts tool renders these but does not list them: ticking a
+            // bundle here makes it visible, it does not add an entry there.
+            // Creating that tool pops its dock open and steals focus from this
+            // panel, which is not what ticking a checkbox here should do - so if it
+            // had to be created, put it straight back out of sight.
+            const bool tractography_was_open = get_tool<Tractography> (false) != nullptr;
+            Tractography* tractography = get_tool<Tractography>();
+            if (!tractography) {
+              item->setCheckState (Qt::Unchecked);
+              return;
+            }
+            if (!tractography_was_open) {
+              for (QWidget* w = tractography; w; w = w->parentWidget()) {
+                if (QDockWidget* dock = qobject_cast<QDockWidget*> (w)) {
+                  dock->hide();
+                  break;
+                }
+              }
+            }
+            try {
+              MR::DWI::Tractography::Properties properties;
+              properties["source"] = "built-in tract atlas";
+              properties["atlas_bundle"] = name;
+              Tractogram* tractogram = tractography->add_atlas_bundle (
+                  tracks, properties, "atlas_" + name);
+              if (tractogram)
+                atlas_loaded[name] = tractogram;
+              else
+                item->setCheckState (Qt::Unchecked);
+            } catch (Exception& e) {
+              e.display();
+              item->setCheckState (Qt::Unchecked);
+            }
+          } else {
+            auto loaded = atlas_loaded.find (name);
+            if (loaded == atlas_loaded.end())
+              return;
+            if (Tractography* tractography = get_tool<Tractography> (false))
+              tractography->remove_atlas_bundle (loaded->second);
+            atlas_loaded.erase (loaded);
+          }
+          window().updateGL();
         }
 
 
@@ -691,8 +948,14 @@ namespace MR
         void View::onModeChanged ()
         {
           const Mode::Base* mode = window().get_current_mode();
-          transparency_box->setVisible (mode->features & Mode::ShaderTransparency);
-          threshold_box->setVisible (mode->features & Mode::ShaderTransparency);
+          // Always shown. The alpha and intensity ramp belong to the image, not to a
+          // mode: the slice modes leave them alone rather than being unable to hold
+          // them, and hiding the controls made them look like a property of Volume
+          // mode. It also stopped being true the moment Ortho grew a volume pane -
+          // the mode is Ortho, the thing on screen is a volume render, and the
+          // controls it needs were not there.
+          transparency_box->setVisible (true);
+          threshold_box->setVisible (true);
           clip_box->setVisible (mode->features & Mode::ShaderClipping);
           if (mode->features & Mode::ShaderClipping)
             clip_planes_selection_changed_slot();
@@ -705,6 +968,14 @@ namespace MR
 
 
 
+
+
+
+        void View::onSetXray ()
+        {
+          Mode::Volume::xray_strength = 0.01f * float (xray->value());
+          window().updateGL();
+        }
 
 
 

@@ -29,18 +29,27 @@ namespace MR
       {
 
         bool Ortho::show_as_row = false;
+        bool Ortho::show_volume = false;
 
         //CONF option: MRViewOrthoAsRow
         //CONF Display the 3 orthogonal views of the Ortho mode in a row,
         //CONF rather than as a 2x2 montage
         //CONF default: false
 
+        //CONF option: MRViewOrthoVolume
+        //CONF Fill the empty fourth quadrant of the Ortho mode's 2x2 montage with
+        //CONF a volume render. No effect with MRViewOrthoAsRow set, which leaves no
+        //CONF spare quadrant.
+        //CONF default: false
+
         Ortho::Ortho () :
-          projections (3, projection),
+          projections (4, projection),
           current_plane (0) {
             static bool conf_read = false;
-            if (!conf_read)
+            if (!conf_read) {
               show_as_row = MR::File::Config::get_bool ("MRViewOrthoAsRow", false);
+              show_volume = MR::File::Config::get_bool ("MRViewOrthoVolume", false);
+            }
             conf_read = true;
           }
 
@@ -80,6 +89,21 @@ namespace MR
           else
             projections[2].set_viewport (window(), 0, 0, w, h);
           draw_plane (2, slice_shader, projections[2]);
+
+          // The fourth quadrant. Bottom-right in the montage, and the one the three
+          // planes leave empty; as a row there is no spare quadrant, so nothing to do.
+          if (show_volume && !show_as_row && image()) {
+            gl::Disable (gl::DEPTH_TEST);
+            projections[3].set_viewport (window(), w, 0, w, h);
+            if (!volume_pane)
+              volume_pane.reset (new Volume);
+            volume_pane->paint (projections[3]);
+            // Volume::paint leaves depth testing and blending set up for a 3D scene;
+            // the frame lines drawn below are 2D and would be depth-tested against it.
+            gl::Disable (gl::DEPTH_TEST);
+            gl::Disable (gl::BLEND);
+            gl::DepthMask (gl::FALSE_);
+          }
 
           projection.set_viewport (window());
 
@@ -147,7 +171,11 @@ namespace MR
 
         const Projection* Ortho::get_current_projection () const
         {
-          if (current_plane < 0 || current_plane > 2)
+          // 3 is the volume pane, which is a projection like any other - returning it
+          // is what lets the mouse work in that quadrant at all.
+          if (current_plane < 0 || current_plane > 3)
+            return NULL;
+          if (current_plane == 3 && !(show_volume && !show_as_row))
             return NULL;
           return &projections[current_plane];
         }
@@ -171,10 +199,13 @@ namespace MR
           else {
             const GLint w = width()/2;
             const GLint h = height()/2;
+            // Mouse coordinates here are bottom-up, matching the GL viewports above:
+            // y < h is the lower half. The lower-right quadrant is the spare one, so
+            // it is the volume pane when that is on and nothing when it is not.
             if (x < w)
               current_plane = y < h ? 2 : 1;
             else
-              current_plane = y < h ? -1 : 0;
+              current_plane = y < h ? (show_volume ? 3 : -1) : 0;
           }
         }
 
@@ -222,6 +253,22 @@ namespace MR
           GL::Context::Grab context;
           show_as_row = state;
           frame_VB.clear();
+          // Laid out as a row there is no fourth quadrant, so the volume toggle has
+          // nothing to act on.
+          window().refresh_volume_pane_action();
+          updateGL();
+        }
+
+
+
+        void Ortho::set_show_volume_slot (bool state)
+        {
+          GL::Context::Grab context;
+          show_volume = state;
+          // Dropped rather than kept: its textures and buffers are the expensive part
+          // of it, and a user who turns this off is not about to pay for them.
+          if (!state)
+            volume_pane.reset();
           updateGL();
         }
 

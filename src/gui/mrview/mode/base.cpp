@@ -27,6 +27,15 @@ namespace MR
       namespace Mode
       {
 
+        Base* Base::painting_mode = nullptr;
+
+        Base* Base::painter ()
+        {
+          return painting_mode ? painting_mode : Window::main->get_current_mode();
+        }
+
+
+
         Base::Base (int flags) :
           projection (window().glarea, window().font),
           features (flags),

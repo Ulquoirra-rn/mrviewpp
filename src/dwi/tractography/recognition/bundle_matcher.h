@@ -51,9 +51,19 @@ namespace MR
              *  a rejection test wants. */
             float nearest_distance (const Eigen::Vector3f& p) const;
 
-            bool any_within (const Eigen::Vector3f& p, float radius) const {
-              return nearest_distance (p) <= radius;
-            }
+            //! The closest inserted point itself, not just how far away it is.
+            /*! False when nothing is within reach, in which case \a out is untouched.
+             *  Needed to fit one point cloud onto another, where the correspondence
+             *  is what the fit is solved from. */
+            bool nearest_point (const Eigen::Vector3f& p, Eigen::Vector3f& out) const;
+
+            //! Is any inserted point within \a radius of \a p?
+            /*! Answers the question without measuring the nearest point: it returns
+             *  at the first point that qualifies, and skips whole cells that cannot
+             *  hold one. Asking "is it closer than X" rather than "how close is it"
+             *  is what makes a wide competitor set affordable - a bundle nowhere near
+             *  the streamline is settled by a few empty hash lookups. */
+            bool any_within (const Eigen::Vector3f& p, float radius) const;
 
             bool empty () const { return cells.empty(); }
 
@@ -85,6 +95,34 @@ namespace MR
          *  Scoring is min-over-centroids of the flip-invariant MDF, with the
          *  atlas bundle compressed by QuickBundles first. Cheap rejections run
          *  before that: length ratio, then endpoint proximity. */
+        //! Thresholds suited to one particular bundle.
+        struct BundleScale { NOMEMALIGN
+          float distance;    //!< acceptance threshold, mm
+          float qb_radius;   //!< clustering radius, mm
+          float dilate;      //!< unused; dilation follows voxel size, not the bundle
+        };
+
+        //! Suggest matching thresholds from how sparsely the bundle samples itself.
+        /*! A bundle's difficulty is not its thickness but how densely the atlas
+         *  samples it. A thick, densely sampled bundle always has an atlas
+         *  streamline near any anatomically correct candidate, so a strict
+         *  threshold works; a thin bundle of few streamlines leaves genuine
+         *  candidates far from the nearest atlas line, and the same threshold
+         *  rejects everything.
+         *
+         *  That is measured directly here: half the bundle is matched against the
+         *  other half, and the spread of those distances says how far a true member
+         *  sits from the sampled bundle. Since matching then runs against the whole
+         *  bundle, which is denser than the half used here, the estimate errs
+         *  slightly loose - the safe direction.
+         *
+         *  Falls back to the metric's fixed default for a bundle too small to
+         *  estimate from. */
+        BundleScale suggest_bundle_thresholds (const vector<Streamline<float>>& bundle,
+                                               int metric,
+                                               size_t max_sample = 400);
+
+
         class BundleMatcher { MEMALIGN(BundleMatcher)
           public:
             //! How a candidate's shape is compared to the bundle.
@@ -130,9 +168,34 @@ namespace MR
             /*! Returns infinity if a pre-filter rejected it outright. */
             float distance (const Streamline<float>&) const;
 
+            //! Is this candidate's distance to the bundle below \a bound?
+            /*! The same answer as distance() < bound, reached without measuring the
+             *  distance. Every closest-point metric reduces per-sample distances, and
+             *  each of them can be settled early: the maximum is over \a bound as
+             *  soon as one sample is, the 90th percentile as soon as a tenth of them
+             *  are, and the mean once the running sum exceeds what the remaining
+             *  samples could bring back. Each sample then asks "is there a bundle
+             *  vertex within \a bound", which stops at the first one, instead of
+             *  finding the nearest.
+             *
+             *  This is what a wide competitor set costs its time in: 37 competitors
+             *  against 400 candidates is 14,800 of these, and all but a few are
+             *  answered "no". */
+            bool closer_than (const Streamline<float>& tck, float bound) const;
+
             bool matches (const Streamline<float>& tck, float& d) const {
               d = distance (tck);
               return d <= params_.max_mdf;
+            }
+
+            //! Distance from one point to the nearest bundle vertex, in mm.
+            /*! Infinity when this matcher has no vertex grid (the MDF metric builds
+             *  none) or the point is beyond the grid's reach. Uncapped, unlike the
+             *  shape metric: a caller comparing two bundles at a point needs to know
+             *  which is nearer even when both are far. */
+            float vertex_distance (const Eigen::Vector3f& p) const {
+              return vertices_ ? vertices_->nearest_distance (p)
+                               : std::numeric_limits<float>::infinity();
             }
 
             const Params& params () const { return params_; }

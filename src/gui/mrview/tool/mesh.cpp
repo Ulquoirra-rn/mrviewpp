@@ -14,6 +14,7 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include "file/path.h"
 #include "mrtrix.h"
 #include "surface/mesh.h"
 #include "gui/mrview/window.h"
@@ -190,6 +191,21 @@ namespace MR
 
           main_box->addLayout (hlayout, 0);
 
+          // Directly under the open/close row, so the batch show/hide controls sit
+          // with the other list-wide actions rather than at the foot of the panel.
+          HBoxLayout* checkall_layout = new HBoxLayout;
+          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+          check_all_button->setObjectName ("batchbtn");
+          check_all_button->setToolTip (tr ("Show every mesh by checking its box"));
+          connect (check_all_button, &QPushButton::clicked, this, [this]{ mesh_list_model->check_all(); window().updateGL(); });
+          checkall_layout->addWidget (check_all_button, 1);
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setObjectName ("batchbtn");
+          uncheck_all_button->setToolTip (tr ("Hide every mesh by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ mesh_list_model->uncheck_all(); window().updateGL(); });
+          checkall_layout->addWidget (uncheck_all_button, 1);
+          main_box->addLayout (checkall_layout, 0);
+
           mesh_list_view = new QListView (this);
           mesh_list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
           mesh_list_view->setDragEnabled (true);
@@ -230,18 +246,6 @@ namespace MR
           connect (wireframe_checkbox, SIGNAL (toggled (bool)), this, SLOT (wireframe_slot (bool)));
           display_layout->addWidget (wireframe_checkbox);
 
-          HBoxLayout* checkall_layout = new HBoxLayout;
-          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
-          check_all_button->setObjectName ("batchbtn");
-          check_all_button->setToolTip (tr ("Show every mesh by checking its box"));
-          connect (check_all_button, &QPushButton::clicked, this, [this]{ mesh_list_model->check_all(); window().updateGL(); });
-          checkall_layout->addWidget (check_all_button, 1);
-          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-          uncheck_all_button->setObjectName ("batchbtn");
-          uncheck_all_button->setToolTip (tr ("Hide every mesh by unchecking its box"));
-          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ mesh_list_model->uncheck_all(); window().updateGL(); });
-          checkall_layout->addWidget (uncheck_all_button, 1);
-          main_box->addLayout (checkall_layout, 0);
         }
 
 
@@ -350,12 +354,42 @@ namespace MR
 
 
 
+        void Mesh::add_commandline_options (MR::App::OptionList& options)
+        {
+          using namespace MR::App;
+          options
+            + OptionGroup ("Mesh display tool options")
+
+            + Option ("mesh.load", "Load a surface (.vtk, .obj, .stl or FreeSurfer) into the mesh tool.").allow_multiple()
+            +   Argument ("surface").type_file_in();
+        }
+
+
+
+        bool Mesh::process_commandline_option (const MR::App::ParsedOption& opt)
+        {
+          if (opt.opt->is ("mesh.load")) {
+            vector<std::string> list (1, std::string (opt[0]));
+            try { add_meshes (list); }
+            catch (Exception& E) { E.display(); }
+            return true;
+          }
+          return false;
+        }
+
+
+
         void Mesh::get_session (nlohmann::json& node) const
         {
           vector<std::string> files;
           for (size_t i = 0; i < mesh_list_model->items.size(); ++i) {
             const Displayable* d = mesh_list_model->items[i].get();
-            if (d)
+            if (!d)
+              continue;
+            // Only paths that still resolve: the name here is the editable display
+            // name, so a renamed or moved mesh would otherwise be saved as an entry
+            // that fails on every future launch (see Window::save_session).
+            if (Path::is_file (d->get_filename()))
               files.push_back (d->get_filename());
           }
           node = files;
@@ -367,10 +401,25 @@ namespace MR
         {
           if (!node.is_array())
             return;
-          vector<std::string> files;
-          for (const auto& f : node)
-            files.push_back (f.get<std::string>());
-          add_meshes (files);
+          // One at a time: add_items() throws on the first file it cannot read, which
+          // would discard every other mesh in the session.
+          vector<std::string> skipped;
+          for (const auto& f : node) {
+            const std::string path = f.get<std::string>();
+            if (!Path::is_file (path)) {
+              skipped.push_back (path);
+              continue;
+            }
+            vector<std::string> one (1, path);
+            try {
+              add_meshes (one);
+            } catch (Exception&) {
+              skipped.push_back (path);
+            }
+          }
+          if (skipped.size())
+            WARN ("session: " + str(skipped.size()) + " mesh file(s) could not be restored: "
+                  + join (skipped, ", "));
         }
 
 

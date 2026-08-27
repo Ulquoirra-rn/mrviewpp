@@ -22,6 +22,7 @@
 #include "dwi/tractography/file.h"
 #include "dwi/tractography/file_trk.h"
 #include "dwi/tractography/roi.h"
+#include "dwi/tractography/editing/worker.h"
 #include "dwi/tractography/file_trx.h"
 #include "dwi/tractography/file_dicom.h"
 #include "dwi/tractography/properties.h"
@@ -790,7 +791,9 @@ namespace MR
           out.dpv.clear();
           out.dps.clear();
           out.per_vertex = out.per_streamline = false;
-          out.source_name = Path::basename (filename);
+          // The display name, not the source path: a rename in the list is meant to
+          // follow the tract into exports and .trx group names.
+          out.source_name = Path::basename (display_name());
 
           // Streamlines generated in-process have no file to re-read; they are
           // already on the CPU. No scalar file can be attached to them yet, so
@@ -1405,6 +1408,19 @@ namespace MR
 
 
 
+        vector<DWI::Tractography::Streamline<float>> Tractogram::unselected_tracks () const
+        {
+          vector<DWI::Tractography::Streamline<float>> out;
+          if (!cpu_cache)
+            return out;
+          for (size_t i = 0; i != cpu_cache->tracks.size(); ++i)
+            if (!selected_flags[i])
+              out.push_back (cpu_cache->tracks[i]);
+          return out;
+        }
+
+
+
         void Tractogram::add_selection_rule (const RegionRef& region, bool want_inside)
         {
           // Replace any existing rule on the same region, so picking the opposite
@@ -1439,7 +1455,13 @@ namespace MR
 
           // Materialise each region here: RegionProvider requires the GUI thread,
           // since the ROI editor keeps its mask only in a GL texture.
-          vector<std::pair<MR::DWI::Tractography::ROI, bool>> criteria;
+          //
+          // The criteria are handed to DWI::Tractography::Editing::Worker - the same
+          // functor tckedit filters with - rather than being tested here, so that
+          // "passes through" and "avoids" mean exactly what -include and -exclude
+          // mean, by construction rather than by transcription. Note that Worker
+          // holds this Properties by reference, so it must outlive the loop below.
+          MR::DWI::Tractography::Properties properties;
           size_t unavailable = 0;
           for (const auto& rule : rules) {
             RegionProvider* provider = provider_for (rule.region);
@@ -1448,9 +1470,12 @@ namespace MR
               continue;
             }
             try {
-              criteria.push_back ({ MR::DWI::Tractography::ROI (provider->get_region_mask (rule.region),
-                                                               rule.region.label()),
-                                    rule.want_inside });
+              MR::DWI::Tractography::ROI roi (provider->get_region_mask (rule.region),
+                                              rule.region.label());
+              if (rule.want_inside)
+                properties.include.add (roi);
+              else
+                properties.exclude.add (roi);
             } catch (Exception&) {
               // An emptied region cannot be turned into an ROI; treat it as
               // unavailable rather than failing the whole re-application.
@@ -1459,15 +1484,22 @@ namespace MR
           }
 
           const auto& tracks = cpu_cache->tracks;
-          vector<uint8_t> flags (tracks.size(), 1);
-          for (size_t i = 0; i != tracks.size(); ++i) {
-            for (const auto& criterion : criteria) {
-              bool touches = false;
-              for (const auto& p : tracks[i]) {
-                if (criterion.first.contains (p)) { touches = true; break; }
-              }
-              if (touches != criterion.second) { flags[i] = 0; break; }
+          vector<uint8_t> flags (tracks.size(), 0);
+          if (properties.include.size() || properties.exclude.size()) {
+            const MR::DWI::Tractography::Editing::Worker worker (properties, false, false);
+            MR::DWI::Tractography::Streamline<> in, out;
+            for (size_t i = 0; i != tracks.size(); ++i) {
+              // Worker swaps the accepted streamline out of its input, so it gets a
+              // copy; the cache must not be emptied by testing it.
+              in = tracks[i];
+              in.set_index (i);
+              worker (in, out);
+              flags[i] = out.size() ? 1 : 0;
             }
+          } else {
+            // Every rule was unavailable; nothing to filter on, so select all
+            // rather than silently blanking the tractogram.
+            std::fill (flags.begin(), flags.end(), 1);
           }
           selected_flags = flags;
           upload_selection();
@@ -1492,9 +1524,51 @@ namespace MR
           // The rules describe the old streamline set, and re-applying them after a
           // destructive edit would just re-select what survived.
           rules.clear();
+          // Refinement is non-destructive by construction: it re-derives from what
+          // the run kept plus what it rejected. This edit permanently removes part of
+          // that, so the relationship to the atlas bundle ends here - the honest
+          // analogue of flattening a layer.
+          clear_refinement();
+          rejected_tracks_.clear();
           erase_threshold_scalar_data();
           erase_colour_data();
           erase_intensity_scalar_data();
+          release_track_buffers();
+
+          DWI::Tractography::Properties props;
+          snapshot_properties (properties, props);
+          load_tracks_from_memory (kept, props, memory_total_count);
+          cpu_cache.reset();
+          enable_editing();
+        }
+
+
+
+        vector<DWI::Tractography::Streamline<float>> Tractogram::refine_candidates () const
+        {
+          // Kept plus rejected: the set the run had to choose from, reconstructed
+          // rather than stored a second time.
+          vector<DWI::Tractography::Streamline<float>> out;
+          if (!refinement_.valid)
+            return out;
+          FilteredTracks scratch;
+          const vector<DWI::Tractography::Streamline<float>>* kept = nullptr;
+          if (cpu_cache) {
+            kept = &cpu_cache->tracks;
+          } else {
+            get_filtered_streamlines (scratch);
+            kept = &scratch.tracks;
+          }
+          out.reserve (kept->size() + rejected_tracks_.size());
+          out.insert (out.end(), kept->begin(), kept->end());
+          out.insert (out.end(), rejected_tracks_.begin(), rejected_tracks_.end());
+          return out;
+        }
+
+
+
+        void Tractogram::release_track_buffers ()
+        {
           {
             GL::Context::Grab context;
             if (vertex_buffers.size())
@@ -1515,12 +1589,22 @@ namespace MR
           num_tracks_per_buffer.clear();
           endpoint_tangents.clear();
           set_threshold_type (TrackThresholdType::None);
+        }
 
+
+
+        void Tractogram::reload_from_memory (const vector<DWI::Tractography::Streamline<float>>& tracks,
+                                             uint64_t total_attempted)
+        {
+          // Used for the live preview during tracking: the GPU buffers, track sizes
+          // and tangents all describe the previous set, so they have to go before
+          // the new set is uploaded, or every refresh leaks them.
+          release_track_buffers();
+          // Whatever was rejected belonged to the streamlines being replaced.
+          rejected_tracks_.clear();
           DWI::Tractography::Properties props;
           snapshot_properties (properties, props);
-          load_tracks_from_memory (kept, props, memory_total_count);
-          cpu_cache.reset();
-          enable_editing();
+          load_tracks_from_memory (tracks, props, total_attempted);
         }
 
 
@@ -1657,6 +1741,12 @@ namespace MR
           starts.clear();
           sizes.clear();
           tck_count = 0;
+          // A VAO's attribute pointers are only ever set up in render(), under
+          // vao_dirty. This one is brand new, so it has none yet: without this the
+          // chunk draws nothing at all. That is invisible on a first load (the flag
+          // starts true) but bites every re-upload - the live preview's refresh, and
+          // the reload after a destructive selection edit.
+          vao_dirty = true;
           GL::assert_context_is_current();
         }
 

@@ -45,6 +45,9 @@ namespace MR
 
             void draw (const Projection& transform, bool is_3D, int axis, int slice) override;
 
+            static void add_commandline_options (MR::App::OptionList& options);
+            bool process_commandline_option (const MR::App::ParsedOption& opt) override;
+
             std::string session_key () const override { return "meshes"; }
             void get_session (nlohmann::json&) const override;
             void set_session (const nlohmann::json&) override;

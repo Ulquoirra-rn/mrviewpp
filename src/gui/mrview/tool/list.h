@@ -24,11 +24,9 @@
 #include "gui/mrview/tool/fixel/fixel.h"
 #include "gui/mrview/tool/screen_capture.h"
 #include "gui/mrview/tool/tractography/tractography.h"
+#include "gui/mrview/tool/trackgen/trackgen.h"
 #include "gui/mrview/tool/mesh.h"
 #include "gui/mrview/tool/atlas.h"
-#ifndef MRTRIX_WASM
-#include "gui/mrview/tool/trackgen/trackgen.h"
-#endif
 #include "gui/mrview/tool/session.h"
 #include "gui/mrview/tool/connectome/connectome.h"
 
@@ -42,12 +40,10 @@ The third argument is the text to be shown in the menu tooltip. */
 TOOL(View, View options, Adjust view settings)
 TOOL(Overlay, Overlay, Overlay other images over the current image)
 TOOL(ROI, ROI editor, View & edit regions of interest)
-TOOL(Tractography, Tractography, Display tracks over the current image)
+TOOL(Tractography, Tracts, Display tracks over the current image)
+TOOL(TrackGen, Fiber gen, Generate streamlines from an atlas bundle or from regions)
 TOOL(Mesh, Mesh display, Display surface meshes over the current image)
 TOOL(Atlas, Atlas, Display a labelled atlas with region names under the cursor)
-#ifndef MRTRIX_WASM
-TOOL(TrackGen, Track generation, Generate streamlines from regions or from a tract atlas)
-#endif
 TOOL(ODF, ODF display, Display orientation density functions)
 TOOL(Fixel, Fixel plot, Plot fixel images)
 TOOL(Connectome, Connectome, Plot connectome properties)

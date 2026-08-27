@@ -63,6 +63,11 @@ namespace MR
              *  not file-backed are omitted. */
             vector<std::pair<std::string, std::string>> list_sh_images () const;
 
+            //! Show the SH-image file chooser, as if "Open" had been pressed.
+            /*! Returns true if at least one usable SH image is loaded afterwards,
+             *  so a caller that needs an FOD can tell whether to carry on. */
+            bool prompt_load_sh_image ();
+
           private slots:
             void onPreviewClosed ();
             void sh_open_slot ();

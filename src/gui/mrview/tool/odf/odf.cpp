@@ -512,6 +512,11 @@ namespace MR
               preview->render_frame->set_dixels (*(settings->dixel->dirs));
           }
           updateGL();
+          // Aligning the built-in tract atlas keys off the FOD, so a newly loaded
+          // SH image is what starts it. Only the first one does: see
+          // Window::request_atlas_registration.
+          if (mode == odf_type_t::SH)
+            window().request_atlas_registration();
         }
 
 
@@ -533,6 +538,19 @@ namespace MR
 
 
 
+
+        bool ODF::prompt_load_sh_image ()
+        {
+          sh_open_slot();
+          // Loaded to be tracked from, not to be looked at: an FOD opened this way
+          // would otherwise cover the view in glyphs, and drawing them costs frame
+          // rate throughout the run. The button is left available to turn back on.
+          if (list_sh_images().size() && !hide_all_button->isChecked()) {
+            hide_all_button->setChecked (true);
+            hide_all_slot();
+          }
+          return list_sh_images().size();
+        }
 
         void ODF::sh_open_slot ()
         {
@@ -572,6 +590,9 @@ namespace MR
           if (indexes.size())
             image_list_model->remove_item (indexes.first());
           updateGL();
+          // If the FOD the atlas was aligned to has just gone, fall back to another
+          // that is still loaded rather than keeping a stale alignment.
+          window().request_atlas_registration();
         }
 
 

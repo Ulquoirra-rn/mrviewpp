@@ -52,7 +52,8 @@ namespace MR
           box_layout->addWidget (open_button);
 
           QPushButton* restore_button = new QPushButton (tr ("Restore auto-saved session"), this);
-          restore_button->setToolTip (tr ("Reload the session that is automatically saved to your home directory"));
+          restore_button->setToolTip (tr ("Reload the session that is automatically saved to your home directory "
+                                          "(also on the File menu, Ctrl+Shift+R)"));
           connect (restore_button, SIGNAL (clicked()), this, SLOT (restore_autosave_slot ()));
           box_layout->addWidget (restore_button);
 
@@ -108,6 +109,47 @@ namespace MR
             status_label->setText (qstr ("Loaded session from " + path));
           else
             status_label->setText ("Failed to load session.");
+        }
+
+
+
+        void Session::add_commandline_options (MR::App::OptionList& options)
+        {
+          using namespace MR::App;
+          options
+            + OptionGroup ("Session tool options")
+
+            + Option ("session.load", "Restore a saved session: the images, the tools that were "
+                                      "open, and what each of them held.").allow_multiple()
+            +   Argument ("file").type_file_in()
+
+            + Option ("session.save", "Save the current scene as a session file and carry on.").allow_multiple()
+            +   Argument ("file").type_file_out();
+        }
+
+
+
+        bool Session::process_commandline_option (const MR::App::ParsedOption& opt)
+        {
+          if (opt.opt->is ("session.load")) {
+            const std::string path (opt[0]);
+            if (window().load_session (path))
+              status_label->setText (qstr ("Loaded session from " + path));
+            else
+              throw Exception ("failed to load session \"" + path + "\"");
+            return true;
+          }
+
+          if (opt.opt->is ("session.save")) {
+            const std::string path (opt[0]);
+            if (window().save_session (path))
+              status_label->setText (qstr ("Saved session to " + path));
+            else
+              throw Exception ("failed to save session \"" + path + "\"");
+            return true;
+          }
+
+          return false;
         }
 
 

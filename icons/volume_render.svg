@@ -1,0 +1,15 @@
+<svg height="48" version="1.1" width="48" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <linearGradient id="vr" gradientUnits="userSpaceOnUse" x1="26" x2="40" y1="26" y2="42">
+    <stop offset="0" stop-color="#7ec8ff"/>
+    <stop offset="1" stop-color="#1a6bb0"/>
+  </linearGradient>
+  <!-- The three ortho quadrants, drawn as empty frames. -->
+  <path d="M 4.5 4.5 H 22.5 V 22.5 H 4.5 Z" fill="none" stroke="#888" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M 25.5 4.5 H 43.5 V 22.5 H 25.5 Z" fill="none" stroke="#888" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M 4.5 25.5 H 22.5 V 43.5 H 4.5 Z" fill="none" stroke="#888" stroke-width="2" stroke-linejoin="round"/>
+  <!-- The fourth, filled: this is the one the toggle turns on. -->
+  <path d="M 25.5 25.5 H 43.5 V 43.5 H 25.5 Z" fill="url(#vr)" stroke="#0d3f6b" stroke-width="2" stroke-linejoin="round"/>
+  <!-- A cube in it, to say "volume" rather than "another slice". -->
+  <path d="M 34.5 29 L 40 32 V 37.5 L 34.5 40.5 L 29 37.5 V 32 Z" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M 34.5 29 V 34.5 L 40 32 M 34.5 34.5 L 29 32 M 34.5 34.5 V 40.5" fill="none" stroke="#fff" stroke-width="1.2" stroke-linejoin="round" opacity="0.85"/>
+</svg>

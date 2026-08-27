@@ -37,6 +37,11 @@ namespace MR
             Q_OBJECT
 
           public:
+
+            //! Docked on the left, not with the rest.
+            /*! Left because fixel colouring and thresholds are tuned against the
+             *  image, and against the tracts drawn over it. */
+            static Qt::DockWidgetArea preferred_dock_area () { return Qt::LeftDockWidgetArea; }
             class Model;
 
             Fixel (Dock* parent);

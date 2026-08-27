@@ -17,8 +17,11 @@
 #ifndef __gui_mrview_mode_ortho_h__
 #define __gui_mrview_mode_ortho_h__
 
+#include <memory>
+
 #include "app.h"
 #include "gui/mrview/mode/slice.h"
+#include "gui/mrview/mode/volume.h"
 
 namespace MR
 {
@@ -45,13 +48,30 @@ namespace MR
                  visitor.update_ortho_mode_gui(*this); }
 
             static bool show_as_row;
+            //! Fill the empty quadrant of the 2x2 montage with a volume render.
+            /*! The montage has three planes and four quadrants, so one is always
+             *  blank. A volume render is the obvious thing to put there: it is the
+             *  view the three slices cannot give, it needs no screen of its own, and
+             *  it costs nothing when off.
+             *
+             *  Only in the 2x2 montage - laid out as a row there is no spare
+             *  quadrant to fill. */
+            static bool show_volume;
 
           public slots:
             void set_show_as_row_slot (bool state);
+            void set_show_volume_slot (bool state);
 
           protected:
+            //! Four: the three planes, and the volume pane in the spare quadrant.
             vector<Projection> projections;
+            //! 0-2 for a plane, 3 for the volume pane, -1 for none.
             int current_plane;
+            //! Built on first use, so a session that never turns it on never pays.
+            /*! A second Mode::Base costs a Projection and a flag word - all the view
+             *  state it reads lives on the Window - so this is a light object that
+             *  happens to know how to draw a volume. */
+            std::unique_ptr<Volume> volume_pane;
             GL::VertexBuffer frame_VB;
             GL::VertexArrayObject frame_VAO;
             GL::Shader::Program frame_program;

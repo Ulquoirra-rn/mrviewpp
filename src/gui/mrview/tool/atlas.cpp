@@ -25,6 +25,10 @@
 #include "gui/mrview/mode/base.h"
 #include "gui/mrview/gui_image.h"
 #include "gui/mrview/tool/atlas.h"
+
+#include <QDialogButtonBox>
+#include <QGridLayout>
+#include <QLineEdit>
 #include "gui/mrview/tool/list_model_base.h"
 #include "gui/dialog/file.h"
 
@@ -40,8 +44,10 @@ namespace MR
         // Slice shader for label volumes: the 3D texture holds a compact region
         // index per voxel (sampled nearest-neighbour so indices are never blended),
         // and `lut` is a 1-row RGB palette texture indexed by that region index.
-        // The regions matching `focus` (crosshair) and `hover` (mouse) are drawn at
-        // full opacity, every other region at `base_alpha * dim_alpha`.
+        // Regions that are ticked in the panel - flagged by the alpha channel of
+        // their palette entry - are drawn at full opacity, as are the regions
+        // matching `focus` (crosshair) and `hover` (mouse); every other region is
+        // drawn at `base_alpha * dim_alpha`.
         class Atlas::Shader : public Displayable::Shader
         { NOMEMALIGN
           public:
@@ -76,8 +82,12 @@ namespace MR
                 "  float v = texture (tex, texcoord.stp).r;\n"
                 "  int index = int (v + 0.5);\n"
                 "  if (index <= 0) discard;\n"
-                "  vec3 rgb = texelFetch (lut, ivec2 (index, 0), 0).rgb;\n"
-                "  bool is_active = (index == focus) || (index == hover);\n"
+                "  vec4 entry = texelFetch (lut, ivec2 (index, 0), 0);\n"
+                "  vec3 rgb = entry.rgb;\n"
+                // The palette's alpha channel is not opacity: it is the region's tick
+                // in the panel's list. Carrying the selection there costs no uniform
+                // and no second texture, and it is a set rather than one index.
+                "  bool is_active = (entry.a > 0.5) || (index == focus) || (index == hover);\n"
                 "  float a = is_active ? base_alpha : base_alpha * dim_alpha;\n"
                 "  if (a <= 0.0) discard;\n"
                 "  color = vec4 (rgb, a);\n"
@@ -121,7 +131,17 @@ namespace MR
                 const uint32_t label = entry.first;
                 names[label] = entry.second.get_name();
                 const auto& c = entry.second.get_colour();
-                lut_colours[label] = { c[0]/255.0f, c[1]/255.0f, c[2]/255.0f };
+                // Pure black is taken as "this LUT carries no colour", not as a
+                // colour. Two of MRtrix's five LUT formats - the basic one (index +
+                // name) and AAL (two names + index) - have no colour columns at all,
+                // and LUT_node then defaults every entry to (0,0,0). Honouring that
+                // literally paints every region black, on a black background, in the
+                // slice view, the volume render and every region swatch at once; the
+                // atlas looks unloaded rather than uncoloured. Falling through to the
+                // per-label fallback below gives such a LUT the same distinct colours
+                // a label absent from the LUT already gets.
+                if (c[0] || c[1] || c[2])
+                  lut_colours[label] = { c[0]/255.0f, c[1]/255.0f, c[2]/255.0f };
               }
 
               // Index 0 is background; its palette entry is never sampled.
@@ -155,7 +175,7 @@ namespace MR
                       palette.push_back (rgb[0]);
                       palette.push_back (rgb[1]);
                       palette.push_back (rgb[2]);
-                      palette.push_back (1.0f);
+                      palette.push_back (0.0f);   // alpha = "ticked", initially not
                     }
                     indices[x + nx*(y + ny*z)] = float (index);
                     auto& a = accum[label];
@@ -299,6 +319,31 @@ namespace MR
               return out;
             }
 
+            //! Is this region ticked in the panel's list?
+            bool is_checked (size_t index) const {
+              return index && 4*index+3 < palette.size() && palette[4*index+3] > 0.5f;
+            }
+
+            //! Tick or untick a region. Only the palette changes, so both the slice
+            //! shader and the volume ray-cast pick it up from a texture they already
+            //! sample - no new uniform, and no per-region work in either.
+            void set_checked (size_t index, bool on) {
+              if (!index || 4*index+3 >= palette.size())
+                return;
+              const float wanted = on ? 1.0f : 0.0f;
+              if (palette[4*index+3] == wanted)
+                return;
+              palette[4*index+3] = wanted;
+              lut_dirty = true;
+            }
+
+            size_t checked_count () const {
+              size_t n = 0;
+              for (size_t i = 1; 4*i+3 < palette.size(); ++i)
+                if (palette[4*i+3] > 0.5f) ++n;
+              return n;
+            }
+
             size_t focus_index;   // ROI under the crosshair: stays active
             size_t hover_index;    // ROI under the mouse: active while hovered
             float dim_factor;
@@ -306,16 +351,31 @@ namespace MR
             std::map<uint32_t, Eigen::Vector3f> centroids;
             std::string label_path, lut_path;   // retained for session save
 
+            //! Hand this atlas to a 3D renderer: index volume, palette, and the
+            //! numbers that decide a region's opacity.
+            /*! Public because the volume renderer composites it directly rather than
+             *  calling render_atlas(); it cannot use the slice shader, whose palette
+             *  lookup has no counterpart in a ray-cast. */
+            Mode::Base::Atlas3D as_3D ()
+            {
+              update_texture3D();
+              update_lut_texture();
+              return { this, GLuint (texture()), GLuint (lut_texture),
+                       int (focus_index), int (hover_index), alpha, dim_factor };
+            }
+
           private:
             void update_lut_texture ()
             {
-              if (lut_texture)
+              if (lut_texture && !lut_dirty)
                 return;
-              lut_texture.gen (gl::TEXTURE_2D, gl::NEAREST);
+              if (!lut_texture)
+                lut_texture.gen (gl::TEXTURE_2D, gl::NEAREST);
               lut_texture.bind();
               gl::PixelStorei (gl::UNPACK_ALIGNMENT, 1);
               gl::TexImage2D (gl::TEXTURE_2D, 0, gl::RGBA32F,
                   GLsizei (palette.size()/4), 1, 0, gl::RGBA, gl::FLOAT, palette.data());
+              lut_dirty = false;
             }
 
             float index_at_voxel (ssize_t x, ssize_t y, ssize_t z) const
@@ -333,6 +393,7 @@ namespace MR
             vector<uint32_t> index_to_label;
             std::map<uint32_t, size_t> label_to_index;
             bool texture_dirty;
+            bool lut_dirty = true;
         };
 
 
@@ -429,6 +490,21 @@ namespace MR
 
           main_box->addLayout (hlayout, 0);
 
+          // Directly under the open/close row, so the batch show/hide controls sit
+          // with the other list-wide actions rather than at the foot of the panel.
+          HBoxLayout* checkall_layout = new HBoxLayout;
+          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+          check_all_button->setObjectName ("batchbtn");
+          check_all_button->setToolTip (tr ("Show every atlas by checking its box"));
+          connect (check_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->check_all(); window().updateGL(); });
+          checkall_layout->addWidget (check_all_button, 1);
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setObjectName ("batchbtn");
+          uncheck_all_button->setToolTip (tr ("Hide every atlas by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->uncheck_all(); window().updateGL(); });
+          checkall_layout->addWidget (uncheck_all_button, 1);
+          main_box->addLayout (checkall_layout, 0);
+
           atlas_list_view = new QListView (this);
           atlas_list_view->setSelectionMode (QAbstractItemView::SingleSelection);
           atlas_list_view->setTextElideMode (Qt::ElideLeft);
@@ -472,31 +548,24 @@ namespace MR
           hover_region_label->setWordWrap (true);
           region_box_layout->addWidget (hover_region_label);
 
-          QGroupBox* list_box = new QGroupBox (tr ("Regions (double-click to jump)"));
+          QGroupBox* list_box = new QGroupBox (tr ("Regions (tick to show, double-click to jump)"));
           main_box->addWidget (list_box, 1);
           VBoxLayout* list_box_layout = new VBoxLayout;
           list_box->setLayout (list_box_layout);
+          region_filter = new QLineEdit (this);
+          make_search_box (region_filter, tr ("Search regions by name"));
+          connect (region_filter, SIGNAL (textChanged (const QString&)),
+                   this, SLOT (region_filter_slot (const QString&)));
+          list_box_layout->addWidget (region_filter);
           region_list = new QListWidget (this);
-          connect (region_list, SIGNAL (itemActivated (QListWidgetItem*)),
-                   this, SLOT (region_activated_slot (QListWidgetItem*)));
           connect (region_list, SIGNAL (itemDoubleClicked (QListWidgetItem*)),
                    this, SLOT (region_activated_slot (QListWidgetItem*)));
-          connect (region_list, SIGNAL (currentItemChanged (QListWidgetItem*, QListWidgetItem*)),
-                   this, SLOT (region_highlight_slot (QListWidgetItem*, QListWidgetItem*)));
+          connect (region_list, SIGNAL (itemChanged (QListWidgetItem*)),
+                   this, SLOT (region_check_slot (QListWidgetItem*)));
           list_box_layout->addWidget (region_list);
-
-          HBoxLayout* checkall_layout = new HBoxLayout;
-          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
-          check_all_button->setObjectName ("batchbtn");
-          check_all_button->setToolTip (tr ("Show every atlas by checking its box"));
-          connect (check_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->check_all(); window().updateGL(); });
-          checkall_layout->addWidget (check_all_button, 1);
-          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-          uncheck_all_button->setObjectName ("batchbtn");
-          uncheck_all_button->setToolTip (tr ("Hide every atlas by unchecking its box"));
-          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ atlas_list_model->uncheck_all(); window().updateGL(); });
-          checkall_layout->addWidget (uncheck_all_button, 1);
-          main_box->addLayout (checkall_layout, 0);
+          QPushButton* clear_ticks = new QPushButton (tr ("untick all"), this);
+          connect (clear_ticks, SIGNAL (clicked()), this, SLOT (clear_region_ticks_slot ()));
+          list_box_layout->addWidget (clear_ticks);
 
           connect (&window(), SIGNAL (focusChanged()), this, SLOT (focus_changed_slot ()));
           connect (&window(), SIGNAL (hoverChanged()), this, SLOT (hover_changed_slot ()));
@@ -518,11 +587,21 @@ namespace MR
 
         void Atlas::draw (const Projection& projection, bool is_3D, int, int)
         {
-          // The label-index/palette shader has no counterpart in the 3D volume
-          // renderer (which composites overlays through the intensity colourmaps),
-          // so the atlas is drawn in slice modes only.
-          if (is_3D)
+          // In 3D the atlas is not drawn here: it is handed to whichever mode is
+          // painting, which composites it into its ray-cast the way it does overlays.
+          // The colours cannot come from an intensity colourmap - these voxels are
+          // region indices - so the palette texture goes with it.
+          if (is_3D) {
+            for (int i = 0; i < atlas_list_model->rowCount(); ++i) {
+              if (!atlas_list_model->items[i]->show || hide_all_button->isChecked())
+                continue;
+              Item* atlas = dynamic_cast<Item*> (atlas_list_model->items[i].get());
+              if (!atlas)
+                continue;
+              Mode::Base::painter()->atlases_for_3D.push_back (atlas->as_3D());
+            }
             return;
+          }
 
           GL::assert_context_is_current();
           gl::Enable (gl::BLEND);
@@ -550,12 +629,68 @@ namespace MR
 
         void Atlas::atlas_open_slot ()
         {
-          const std::string label_path = Dialog::File::get_image (this, "Select atlas label volume");
-          if (label_path.empty())
+          // One dialog naming both files, rather than two bare file pickers in
+          // sequence: an atlas needs a label volume *and* a lookup table, and being
+          // shown a file browser with no explanation of which is being asked for -
+          // twice - is not a fair way to find that out.
+          QDialog dialog (this);
+          dialog.setWindowTitle (tr ("Open atlas"));
+          QVBoxLayout* layout = new QVBoxLayout (&dialog);
+
+          QLabel* explanation = new QLabel (tr (
+              "An atlas needs two files:\n\n"
+              "  \u2022  a label volume - an image whose voxel values are region indices\n"
+              "  \u2022  a lookup table - text mapping those indices to names and colours\n\n"
+              "FreeSurfer, ITK-SNAP, AAL, MRtrix and basic lookup tables are all read."));
+          explanation->setWordWrap (true);
+          layout->addWidget (explanation);
+
+          QGridLayout* grid = new QGridLayout;
+          layout->addLayout (grid);
+          QLineEdit* label_edit = new QLineEdit (&dialog);
+          label_edit->setPlaceholderText (tr ("path to the label volume"));
+          QLineEdit* lut_edit = new QLineEdit (&dialog);
+          lut_edit->setPlaceholderText (tr ("path to the lookup table"));
+          QPushButton* label_browse = new QPushButton (tr ("Browse..."), &dialog);
+          QPushButton* lut_browse = new QPushButton (tr ("Browse..."), &dialog);
+          grid->addWidget (new QLabel (tr ("Label volume")), 0, 0);
+          grid->addWidget (label_edit, 0, 1);
+          grid->addWidget (label_browse, 0, 2);
+          grid->addWidget (new QLabel (tr ("Lookup table")), 1, 0);
+          grid->addWidget (lut_edit, 1, 1);
+          grid->addWidget (lut_browse, 1, 2);
+
+          QDialogButtonBox* buttons = new QDialogButtonBox (
+              QDialogButtonBox::Open | QDialogButtonBox::Cancel, &dialog);
+          layout->addWidget (buttons);
+          QPushButton* open_ok = buttons->button (QDialogButtonBox::Open);
+          open_ok->setEnabled (false);
+
+          auto refresh_ok = [&] () {
+            open_ok->setEnabled (!label_edit->text().trimmed().isEmpty() &&
+                                 !lut_edit->text().trimmed().isEmpty());
+          };
+          connect (label_edit, &QLineEdit::textChanged, refresh_ok);
+          connect (lut_edit, &QLineEdit::textChanged, refresh_ok);
+          connect (label_browse, &QPushButton::clicked, [&] () {
+            const std::string path = Dialog::File::get_image (&dialog, "Select atlas label volume");
+            if (path.size())
+              label_edit->setText (qstr (path));
+          });
+          connect (lut_browse, &QPushButton::clicked, [&] () {
+            const std::string path = Dialog::File::get_file (&dialog,
+                "Select lookup table (FreeSurfer / ITK-SNAP / AAL / MRtrix / basic)");
+            if (path.size())
+              lut_edit->setText (qstr (path));
+          });
+          connect (buttons, SIGNAL (accepted()), &dialog, SLOT (accept()));
+          connect (buttons, SIGNAL (rejected()), &dialog, SLOT (reject()));
+
+          if (dialog.exec() != QDialog::Accepted)
             return;
-          const std::string lut_path = Dialog::File::get_file (this,
-              "Select lookup table (FreeSurfer / ITK-SNAP / AAL / MRtrix / basic)");
-          if (lut_path.empty())
+          const std::string label_path = label_edit->text().trimmed().toStdString();
+          const std::string lut_path = lut_edit->text().trimmed().toStdString();
+          if (label_path.empty() || lut_path.empty())
             return;
 
           atlas_list_model->add_item (label_path, lut_path);
@@ -756,14 +891,44 @@ namespace MR
 
 
 
-        void Atlas::region_highlight_slot (QListWidgetItem* item, QListWidgetItem*)
+        void Atlas::region_check_slot (QListWidgetItem* item)
         {
+          // Ticks are set on the item while the list is being rebuilt, which emits
+          // this; without the guard the atlas would be rewritten from a half-built list.
           if (syncing_region_list || !item)
             return;
           Item* atlas = current_item();
           if (!atlas)
             return;
-          set_focus_region (atlas->index_of (uint32_t (item->data (Qt::UserRole).toUInt())));
+          const uint32_t label = uint32_t (item->data (Qt::UserRole).toUInt());
+          const bool on = item->checkState() == Qt::Checked;
+          atlas->set_checked (atlas->index_of (label), on);
+          // A tick that no longer matches the search has to stay visible - it is
+          // still on screen, and hiding it hides what the picture is made of - so
+          // the list is rebuilt to pin it above the matches.
+          if (!region_filter->text().isEmpty())
+            populate_region_list();
+          window().updateGL();
+        }
+
+
+
+        void Atlas::region_filter_slot (const QString&)
+        {
+          populate_region_list();
+        }
+
+
+
+        void Atlas::clear_region_ticks_slot ()
+        {
+          Item* atlas = current_item();
+          if (!atlas)
+            return;
+          for (const auto& kv : atlas->centroids)
+            atlas->set_checked (atlas->index_of (kv.first), false);
+          populate_region_list();
+          window().updateGL();
         }
 
 
@@ -774,15 +939,48 @@ namespace MR
           region_list->clear();
           Item* atlas = current_item();
           if (atlas) {
-            // Only list regions actually present in the volume (those with a centroid).
-            for (const auto& kv : atlas->centroids) {
-              const uint32_t label = kv.first;
+            const QString needle = region_filter->text().trimmed().toLower();
+
+            auto add_divider = [&] (const QString& text) {
+              QListWidgetItem* qitem = new QListWidgetItem (text, region_list);
+              qitem->setFlags (Qt::NoItemFlags);          // not checkable, not selectable
+              QFont font = qitem->font();
+              font.setItalic (true);
+              qitem->setFont (font);
+            };
+            auto add_region = [&] (uint32_t label) {
+              const size_t index = atlas->index_of (label);
               QListWidgetItem* qitem = new QListWidgetItem (qstr (atlas->name_of_label (label)), region_list);
               qitem->setData (Qt::UserRole, QVariant (uint (label)));
-              const auto rgb = atlas->colour_of_index (atlas->index_of (label));
+              qitem->setFlags (qitem->flags() | Qt::ItemIsUserCheckable);
+              qitem->setCheckState (atlas->is_checked (index) ? Qt::Checked : Qt::Unchecked);
+              const auto rgb = atlas->colour_of_index (index);
               QPixmap swatch (12, 12);
               swatch.fill (QColor (int (rgb[0]*255.0f), int (rgb[1]*255.0f), int (rgb[2]*255.0f)));
               qitem->setIcon (QIcon (swatch));
+            };
+
+            // Only list regions actually present in the volume (those with a centroid).
+            // Ticked ones first, whatever the search says: they are what is drawn.
+            size_t ticked = 0;
+            for (const auto& kv : atlas->centroids)
+              if (atlas->is_checked (atlas->index_of (kv.first))) ++ticked;
+            if (ticked && !needle.isEmpty()) {
+              add_divider (tr ("\u2014 ticked (%1) \u2014").arg (uint64_t (ticked)));
+              for (const auto& kv : atlas->centroids)
+                if (atlas->is_checked (atlas->index_of (kv.first)))
+                  add_region (kv.first);
+              add_divider (tr ("\u2014 matches \u2014"));
+            }
+            for (const auto& kv : atlas->centroids) {
+              const uint32_t label = kv.first;
+              if (!needle.isEmpty()) {
+                if (atlas->is_checked (atlas->index_of (label)))
+                  continue;                                // already pinned above
+                if (!qstr (atlas->name_of_label (label)).toLower().contains (needle))
+                  continue;
+              }
+              add_region (label);
             }
           }
           syncing_region_list = false;
@@ -795,7 +993,9 @@ namespace MR
           node = nlohmann::json::array();
           for (size_t i = 0; i < atlas_list_model->items.size(); ++i) {
             const Item* atlas = dynamic_cast<const Item*> (atlas_list_model->items[i].get());
-            if (atlas)
+            // Both halves must still exist to be worth restoring; an atlas is
+            // useless without its lookup table.
+            if (atlas && Path::is_file (atlas->label_path) && Path::is_file (atlas->lut_path))
               node.push_back ({ { "labels", atlas->label_path }, { "lut", atlas->lut_path } });
           }
         }
@@ -806,12 +1006,22 @@ namespace MR
         {
           if (!node.is_array())
             return;
+          vector<std::string> skipped;
           for (const auto& entry : node) {
             if (entry.find ("labels") == entry.end() || entry.find ("lut") == entry.end())
               continue;
-            atlas_list_model->add_item (entry["labels"].get<std::string>(),
-                                        entry["lut"].get<std::string>());
+            const std::string labels = entry["labels"].get<std::string>();
+            const std::string lut = entry["lut"].get<std::string>();
+            // Per entry, so one missing atlas does not cost the others theirs.
+            try {
+              atlas_list_model->add_item (labels, lut);
+            } catch (Exception&) {
+              skipped.push_back (labels);
+            }
           }
+          if (skipped.size())
+            WARN ("session: " + str(skipped.size()) + " atlas(es) could not be restored: "
+                  + join (skipped, ", "));
           if (atlas_list_model->rowCount())
             atlas_list_view->selectionModel()->select (
                 atlas_list_model->index (atlas_list_model->rowCount()-1, 0),
@@ -837,6 +1047,10 @@ namespace MR
 
             + Option ("atlas.dim", "Set the opacity of all other regions, relative to atlas.opacity [0-1].").allow_multiple()
             +   Argument ("value").type_float (0.0, 1.0)
+
+            + Option ("atlas.select", "Tick one atlas region, so it is drawn at full opacity "
+                                      "while the rest stay dimmed. Names are matched case-insensitively.").allow_multiple()
+            +   Argument ("name").type_text()
 
             + Option ("atlas.export_region", "Write one atlas region out as a binary mask image.").allow_multiple()
             +   Argument ("name").type_text()
@@ -865,6 +1079,27 @@ namespace MR
 
           if (opt.opt->is ("atlas.dim")) {
             dim_slider->setSliderPosition (int (1.0e3f * float (opt[0])));
+            return true;
+          }
+
+          if (opt.opt->is ("atlas.select")) {
+            Item* atlas = current_item();
+            if (!atlas) {
+              WARN ("no atlas is loaded: -atlas.select has nothing to tick");
+              return true;
+            }
+            const std::string wanted = lowercase (std::string (opt[0]));
+            bool found = false;
+            for (const auto& kv : atlas->centroids) {
+              if (lowercase (atlas->name_of_label (kv.first)) != wanted)
+                continue;
+              atlas->set_checked (atlas->index_of (kv.first), true);
+              found = true;
+            }
+            if (!found)
+              WARN ("no atlas region named \"" + std::string (opt[0]) + "\" is loaded");
+            populate_region_list();
+            window().updateGL();
             return true;
           }
 

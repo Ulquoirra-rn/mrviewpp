@@ -161,6 +161,7 @@ namespace MR
             std::array<GLint,3> position = from;
             position[slab_axis] = from[slab_axis] + s;
 
+            framebuffer.bind();
             roi.texture().bind();
             shared->program.start();
             gl::Uniform3iv (gl::GetUniformLocation (shared->program, "position"), 1, position.data());
@@ -168,6 +169,15 @@ namespace MR
             gl::DrawArrays (gl::TRIANGLE_FAN, 0, 4);
             shared->program.stop();
             GL_CHECK_ERROR;
+
+            // Unbind before reading: tex is this framebuffer's colour attachment, and
+            // sampling an attachment of the bound framebuffer is a feedback loop -
+            // undefined, and zeros in practice here. Reading a slab a slice at a time
+            // moved the read inside the loop, which is how the unbind that upstream
+            // did before it got left behind. Everything that only writes to the edit
+            // buffer (brush, rectangle) was unaffected, so this showed up as "fill
+            // does nothing but flood the slice", and as undo restoring a blank slice.
+            framebuffer.unbind();
 
             tex.bind();
             gl::PixelStorei (gl::PACK_ALIGNMENT, 1);
@@ -181,7 +191,6 @@ namespace MR
                 before[offset_of (s, u, v)] = plane[size_t (u) + size_t (tex_size[0]) * v];
           }
 
-          framebuffer.unbind();
           after = before;
           GL_CHECK_ERROR;
           GL::assert_context_is_current();
@@ -228,6 +237,8 @@ namespace MR
           size (r.size),
           tex_size (r.tex_size),
           slice_axes (r.slice_axes),
+          slab_axis (r.slab_axis),
+          slab_reference (r.slab_reference),
           before (std::move (r.before)),
           after (std::move (r.after))
         {
@@ -252,6 +263,8 @@ namespace MR
           size = r.size;
           tex_size = r.tex_size;
           slice_axes = r.slice_axes;
+          slab_axis = r.slab_axis;
+          slab_reference = r.slab_reference;
           before = std::move (r.before);
           after = std::move (r.after);
           return *this;
@@ -462,7 +475,12 @@ namespace MR
           GL::Context::Grab context;
           GL::assert_context_is_current();
           roi.texture().bind();
-          gl::TexSubImage3D (gl::TEXTURE_3D, 0, from[0], from[1], from[2], size[0], size[1], size[2], gl::RED, gl::UNSIGNED_BYTE, (void*) (&after[0]));
+          // RED_INTEGER, not RED: the ROI texture is R8UI (item.cpp), and an integer
+          // internal format rejects a GL_RED upload with GL_INVALID_OPERATION - so
+          // the fill was computed correctly and then thrown away by the driver. Every
+          // other edit here already uploads as RED_INTEGER; this one call did not,
+          // which is why brush and rectangle worked and only fill did nothing.
+          gl::TexSubImage3D (gl::TEXTURE_3D, 0, from[0], from[1], from[2], size[0], size[1], size[2], gl::RED_INTEGER, gl::UNSIGNED_BYTE, (void*) (&after[0]));
           GL::assert_context_is_current();
         }
 
@@ -472,6 +490,14 @@ namespace MR
 
         void ROI_UndoEntry::replicate_slab ()
         {
+          // Refuse to run on an entry whose slab axis is one of the in-plane axes:
+          // offset_of cannot map (s,u,v) onto a unique voxel in that case. Checked
+          // in release as well as debug, because getting it wrong once meant
+          // indexing outside before/after on every stroke.
+          if (slab_axis == slice_axes[0] || slab_axis == slice_axes[1]) {
+            assert (false);
+            return;
+          }
           if (size[slab_axis] <= 1)
             return;
           for (GLint v = 0; v != tex_size[1]; ++v) {

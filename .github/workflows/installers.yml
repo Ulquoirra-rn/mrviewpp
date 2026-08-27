@@ -63,6 +63,12 @@ jobs:
           cp bin/mrview "$APP/Contents/MacOS/mrview++"
           cp lib/libmrtrix.dylib "$APP/Contents/MacOS/"
           cp icons/mrview++.icns "$APP/Contents/Resources/mrview++.icns"
+          # Built-in tract atlas: data next to the executable's Resources, and the
+          # registration binary beside mrview++ where AtlasTemplate::ants_path looks.
+          mkdir -p "$APP/Contents/Resources/mrviewpp"
+          cp share/mrtrix3/mrviewpp/* "$APP/Contents/Resources/mrviewpp/"
+          bash packaging/fetch_ants.sh macos-14-ARM64 "$APP/Contents/MacOS"
+          cp packaging/ANTS_LICENSE.txt "$APP/Contents/Resources/"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <plist version="1.0"><dict>
@@ -108,6 +114,8 @@ jobs:
         run: |
           ./configure
           ./build bin/mrview
+      - name: Fetch antsRegistration (tract atlas alignment)
+        run: bash packaging/fetch_ants.sh ubuntu-22.04 bin
       - name: Package AppImage
         run: bash packaging/linux/make_appimage.sh
       - uses: actions/upload-artifact@v4
@@ -140,6 +148,8 @@ jobs:
         run: |
           ./configure
           ./build bin/mrview
+      - name: Fetch antsRegistration (tract atlas alignment)
+        run: bash packaging/fetch_ants.sh ubuntu-22.04 bin
       - name: Package .deb (deps computed for this distro)
         run: |
           bash packaging/linux/make_deb.sh
@@ -207,6 +217,23 @@ jobs:
           shopt -s globstar nullglob
           mkdir -p dist
           cp bin/mrview.exe dist/mrview++.exe
+          # Built-in tract atlas: antsRegistration.exe beside mrview++.exe (where
+          # AtlasTemplate::ants_path looks first) and the data in share/.
+          bash packaging/fetch_ants.sh windows-2022 dist
+          # antsRegistration.exe is an MSVC build and imports MSVCP140.DLL,
+          # VCRUNTIME140.DLL and VCRUNTIME140_1.DLL. MRView++ itself is a MinGW
+          # build and ships none of those, and a clean Windows install may not have
+          # the VC++ redistributable, so atlas alignment would silently be
+          # unavailable. Deploy them app-local beside the exe, which Microsoft
+          # permits and Windows resolves first.
+          for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+            src="$(find /c/Windows/System32 -maxdepth 1 -iname "$dll" | head -1)"
+            if [ -n "$src" ]; then cp "$src" dist/; else echo "WARNING: $dll not found on the runner"; fi
+          done
+          ls -1 dist/*.dll | head -20
+          mkdir -p dist/share/mrviewpp
+          cp share/mrtrix3/mrviewpp/* dist/share/mrviewpp/
+          cp packaging/ANTS_LICENSE.txt dist/
           # Core MRtrix DLL - the MinGW build may name it mrtrix.dll or
           # libmrtrix.dll and place it in lib/ or bin/; copy whichever exists.
           cp -u lib/*mrtrix*.dll dist/ 2>/dev/null || true

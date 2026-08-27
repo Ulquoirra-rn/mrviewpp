@@ -129,6 +129,21 @@ namespace MR
 
             main_box->addLayout (layout, 0);
 
+            // Directly under the open/close row, so the batch show/hide controls sit
+            // with the other list-wide actions rather than at the foot of the panel.
+            HBoxLayout* checkall_layout = new HBoxLayout;
+            QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+            check_all_button->setObjectName ("batchbtn");
+            check_all_button->setToolTip (tr ("Show every overlay by checking its box"));
+            connect (check_all_button, &QPushButton::clicked, this, [this]{ image_list_model->check_all(); updateGL(); });
+            checkall_layout->addWidget (check_all_button, 1);
+            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+            uncheck_all_button->setObjectName ("batchbtn");
+            uncheck_all_button->setToolTip (tr ("Hide every overlay by unchecking its box"));
+            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ image_list_model->uncheck_all(); updateGL(); });
+            checkall_layout->addWidget (uncheck_all_button, 1);
+            main_box->addLayout (checkall_layout, 0);
+
             image_list_view = new QListView (this);
             image_list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
             image_list_view->setHorizontalScrollBarPolicy (Qt::ScrollBarAlwaysOff);
@@ -147,6 +162,20 @@ namespace MR
                      this, SLOT (right_click_menu_slot (const QPoint&)));
 
             main_box->addWidget (image_list_view, 1);
+
+            // Narrow a long overlay list down as you type. The listing only: an
+            // overlay filtered out of view keeps whatever visibility its box had.
+            overlay_filter = new QLineEdit (this);
+            make_search_box (overlay_filter, tr ("Search overlays by name"));
+            overlay_filter->setClearButtonEnabled (true);
+            overlay_filter->setToolTip (tr ("List only the overlays whose name contains this text"));
+            main_box->addWidget (overlay_filter, 0);
+            connect (overlay_filter, &QLineEdit::textChanged, this, [this] (const QString&) { apply_filter(); });
+            // Rows come and go from several places (open, close, drag-and-drop, tract
+            // endpoints), so follow the model rather than patching every call site.
+            connect (image_list_model, &QAbstractItemModel::rowsInserted, this, [this] { apply_filter(); });
+            connect (image_list_model, &QAbstractItemModel::rowsRemoved, this, [this] { apply_filter(); });
+            connect (image_list_model, &QAbstractItemModel::modelReset, this, [this] { apply_filter(); });
 
             // Volume selecter
             volume_box = new QGroupBox ("Volume indices (dimension: index)");
@@ -225,21 +254,38 @@ namespace MR
             connect (image_list_model, SIGNAL (dataChanged (const QModelIndex&, const QModelIndex&)),
                      this, SLOT (toggle_shown_slot (const QModelIndex&, const QModelIndex&)));
 
-            HBoxLayout* checkall_layout = new HBoxLayout;
-            QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
-            check_all_button->setObjectName ("batchbtn");
-            check_all_button->setToolTip (tr ("Show every overlay by checking its box"));
-            connect (check_all_button, &QPushButton::clicked, this, [this]{ image_list_model->check_all(); updateGL(); });
-            checkall_layout->addWidget (check_all_button, 1);
-            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-            uncheck_all_button->setObjectName ("batchbtn");
-            uncheck_all_button->setToolTip (tr ("Hide every overlay by unchecking its box"));
-            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ image_list_model->uncheck_all(); updateGL(); });
-            checkall_layout->addWidget (uncheck_all_button, 1);
-            main_box->addLayout (checkall_layout, 0);
-
             update_selection();
           }
+
+
+        void Overlay::apply_filter ()
+        {
+          const QString text = overlay_filter->text().trimmed();
+          for (int i = 0; i != image_list_model->rowCount(); ++i) {
+            const QString name = image_list_model->data (
+                image_list_model->index (i, 0), Qt::DisplayRole).toString();
+            image_list_view->setRowHidden (i, text.size() && !name.contains (text, Qt::CaseInsensitive));
+          }
+        }
+
+
+
+        void Overlay::add_overlays (const vector<std::string>& paths)
+        {
+          vector<std::unique_ptr<MR::Header>> list;
+          for (const auto& path : paths) {
+            try {
+              list.push_back (make_unique<MR::Header> (MR::Header::open (path)));
+            } catch (Exception& e) {
+              e.display();
+            }
+          }
+          if (list.empty())
+            return;
+          add_images (list);
+          updateGL();
+        }
+
 
 
         void Overlay::image_open_slot ()
@@ -279,7 +325,11 @@ namespace MR
           vector<std::string> files;
           for (size_t i = 0; i < image_list_model->items.size(); ++i) {
             const Image* im = dynamic_cast<const Image*> (image_list_model->items[i].get());
-            if (im)
+            if (!im)
+              continue;
+            // Skip what cannot be reopened, so the session does not carry an entry
+            // that is guaranteed to fail next launch (see Window::save_session).
+            if (Path::is_file (im->header().name()))
               files.push_back (im->header().name());
           }
           node = files;
@@ -292,15 +342,22 @@ namespace MR
           if (!node.is_array())
             return;
           vector<std::unique_ptr<MR::Header>> headers;
+          vector<std::string> skipped;
           for (const auto& f : node) {
+            const std::string path = f.get<std::string>();
             try {
-              headers.push_back (make_unique<MR::Header> (MR::Header::open (f.get<std::string>())));
-            } catch (Exception& e) {
-              e.display();
+              headers.push_back (make_unique<MR::Header> (MR::Header::open (path)));
+            } catch (Exception&) {
+              // Console, not a dialog: restoring a session must not stack modal
+              // errors in front of a window that has not finished opening.
+              skipped.push_back (path);
             }
           }
           if (headers.size())
             add_images (headers);
+          if (skipped.size())
+            WARN ("session: " + str(skipped.size()) + " overlay(s) could not be restored: "
+                  + join (skipped, ", "));
         }
 
 
@@ -457,6 +514,17 @@ namespace MR
           }
 
           // Write one overlay to a Float32 image with its threshold baked to NaN.
+          //! Export stem for an overlay: its list name, plus "_thresholded" only if
+          //  a threshold is actually applied - the suffix used to be unconditional,
+          //  which claimed a threshold on untouched overlays.
+          std::string overlay_export_stem (Image* overlay)
+          {
+            std::string stem = overlay_stem (overlay->get_filename());
+            if (overlay->use_discard_lower() || overlay->use_discard_upper())
+              stem += "_thresholded";
+            return stem;
+          }
+
           void write_thresholded_overlay (Image* overlay, const std::string& path)
           {
             const bool dl = overlay->use_discard_lower();
@@ -532,7 +600,9 @@ namespace MR
 
           try {
             if (overlays.size() == 1) {
-              const std::string suggested = overlay_stem (overlays[0]->image.name()) + "_thresholded.nii.gz";
+              // The name shown in the list (which the user can rename), not the
+              // path it was loaded from.
+              const std::string suggested = overlay_export_stem (overlays[0]) + ".nii.gz";
               const std::string fname = Dialog::File::get_save_image_name (this, "Export overlay", suggested);
               if (fname.empty()) return;
               write_thresholded_overlay (overlays[0], fname);
@@ -547,7 +617,10 @@ namespace MR
               return;
 
             if (choice.mode == Dialog::File::MultiSaveMode::SingleFile) {
-              const std::string suggested = "overlays_4d.nii.gz";
+              const std::string suggested = overlay_stem (overlays[0]->get_filename())
+                                          + "_plus" + str (overlays.size() - 1) + ".nii.gz";
+              // No "_thresholded" here: a 4D stack may mix thresholded and
+              // untouched volumes, so the name cannot honestly claim either.
               const std::string fname = Dialog::File::get_save_image_name (this, "Export overlays as 4D image", suggested);
               if (fname.empty()) return;
               write_overlays_4d (vector<Image*> (overlays.begin(), overlays.end()), fname);
@@ -558,7 +631,7 @@ namespace MR
               std::string folder = Dialog::File::get_folder (this, "Select folder for exported overlays");
               if (folder.empty()) return;
               for (Item* o : overlays)
-                write_thresholded_overlay (o, Path::join (folder, overlay_stem (o->image.name()) + "_thresholded" + choice.extension));
+                write_thresholded_overlay (o, Path::join (folder, overlay_export_stem (o) + choice.extension));
               QMessageBox::information (this, "Export overlays",
                   qstr (str(overlays.size()) + " overlays exported to:\n" + folder));
             }
@@ -596,7 +669,7 @@ namespace MR
               need_to_update |= !std::isfinite (image->intensity_min());
               image->transparent_intensity = image->opaque_intensity = image->intensity_min();
               if (is_3D)
-                window().get_current_mode()->overlays_for_3D.push_back (image);
+                Mode::Base::painter()->overlays_for_3D.push_back (image);
               else
                 image->render3D (image->slice_shader, projection, projection.depth_of (window().focus()));
             }

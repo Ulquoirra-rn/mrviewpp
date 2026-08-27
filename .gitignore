@@ -60,3 +60,8 @@ mrview++
 MRView.app/
 mrview-stock.app/
 mrview-stock
+
+# build artefacts and local scratch that should never be committed
+.DS_Store
+*.dmg
+session.json

@@ -77,6 +77,20 @@ namespace MR
             Projection projection;
             const int features;
             QList<ImageBase*> overlays_for_3D;
+
+            //! A label atlas handed to a 3D renderer.
+            /*! Not an ImageBase like an overlay, because an atlas is not coloured by a
+             *  colourmap: its voxels are region indices and the colours come from a
+             *  palette texture. The volume renderer needs both textures and the few
+             *  numbers that decide a region's opacity, so they travel together. */
+            struct Atlas3D { NOMEMALIGN
+              const ImageBase* image;      //!< for the texture-to-scanner transform
+              GLuint index_texture;        //!< 3D, one region index per voxel
+              GLuint palette_texture;      //!< 1 row of RGBA, indexed by that
+              int focus, hover;            //!< regions drawn at full opacity
+              float alpha, dim;            //!< everything else gets alpha * dim
+            };
+            QList<Atlas3D> atlases_for_3D;
             bool update_overlays;
 
             virtual void paint (Projection& projection);
@@ -153,7 +167,24 @@ namespace MR
               return get_through_plane_translation (MOVE_IN_OUT_FOV_MULTIPLIER * increment * FOV(), projection);
             }
 
+            //! The mode whose render_tools() call is currently running.
+            /*! Tools that hand something back to the mode rather than drawing it - the
+             *  Overlay tool appends to overlays_for_3D so the volume shader can
+             *  composite it - used to ask the Window for its current mode. That is the
+             *  same object right up until a mode paints *another* mode, which Ortho
+             *  now does for the volume pane: the overlay was handed to the Ortho
+             *  object, the Volume object's list stayed empty, and the overlay simply
+             *  did not appear. Null outside a render_tools() call. */
+            static Base* painting_mode;
+
+            //! The mode a tool should hand 3D work to: the painter, or the current mode.
+            static Base* painter ();
+
             void render_tools (const Projection& projection, bool is_3D = false, int axis = 0, int slice = 0) {
+              // Restored rather than cleared, because these nest: Ortho's volume pane
+              // paints from inside Ortho's own paint().
+              Base* const previous = painting_mode;
+              painting_mode = this;
               QList<QAction*> tools = window().tools()->actions();
               for (int i = 0; i < tools.size(); ++i) {
                 Tool::Dock* dock = dynamic_cast<Tool::__Action__*>(tools[i])->dock;
@@ -163,6 +194,7 @@ namespace MR
                   GL::assert_context_is_current();
                 }
               }
+              painting_mode = previous;
             }
 
             void setup_projection (const int, ModelViewProjection&) const;

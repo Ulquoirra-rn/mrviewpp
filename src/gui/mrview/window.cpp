@@ -14,16 +14,20 @@
  * For more details, see http://www.mrtrix.org/.
  */
 #include <QDebug>
+#include <QTextBrowser>
 #ifndef MRTRIX_WASM
 #include <QProcess>
 #endif
 #include <QTimer>
 #include <fstream>
+#include <functional>
+#include <set>
 #include "app.h"
 #include "fork_version.h"
 #include "timer.h"
 #include "file/config.h"
 #include "file/path.h"
+#include "file/utils.h"
 #include "file/json.h"
 #include "header.h"
 #include "algo/copy.h"
@@ -36,7 +40,11 @@
 #include "gui/dialog/image_properties.h"
 #include "gui/mrview/update_check.h"
 #include "gui/mrview/qthelpers.h"
+#include "gui/mrview/atlas_registration.h"
+#include "gui/mrview/atlas_template.h"
 #include "gui/mrview/mode/base.h"
+#include "gui/mrview/tool/base.h"
+#include "gui/mrview/tool/odf/odf.h"
 #include "gui/mrview/mode/list.h"
 #include "gui/mrview/tool/base.h"
 #include "gui/mrview/tool/list.h"
@@ -197,6 +205,16 @@ namespace MR
       void Window::GLArea::mouseReleaseEvent (QMouseEvent* event) {
         main->mouseReleaseEventGL (event);
       }
+      void Window::GLArea::mouseDoubleClickEvent (QMouseEvent* event) {
+        // Only the plain left button: the other buttons carry the mode's own
+        // interactions, and a double-click there is two of those.
+        if (event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier) {
+          main->toggle_tool_panels();
+          event->accept();
+          return;
+        }
+        main->mousePressEventGL (event);
+      }
       void Window::GLArea::wheelEvent (QWheelEvent* event) {
         main->wheelEventGL (event);
       }
@@ -285,6 +303,9 @@ namespace MR
           QToolButton* button;
 
           setTabPosition (Qt::AllDockWidgetAreas, QTabWidget::East);
+          // Left-docked tools carry their tabs on the outside edge too, so both
+          // stacks read outwards from the image rather than one of them inwards.
+          setTabPosition (Qt::LeftDockWidgetArea, QTabWidget::West);
 
           //CONF option: MRViewDockFloating
           //CONF default: 0 (false)
@@ -352,6 +373,16 @@ namespace MR
 
           menu->addSeparator();
 
+          // The session is saved on exit and every couple of minutes; this is how it
+          // comes back. It was reachable only from the Session panel, which is a lot
+          // of clicks for the first thing you do after reopening the program.
+          action = menu->addAction (tr ("Restore auto-saved session"), this, SLOT (restore_autosave_slot()));
+          action->setShortcut (tr ("Ctrl+Shift+R"));
+          action->setToolTip (tr ("Reload the session saved to your home directory"));
+          addAction (action);
+
+          menu->addSeparator();
+
           action = menu->addAction (tr ("Quit"), this, SLOT (close()));
           action->setShortcut (tr ("Ctrl+Q"));
           addAction (action);
@@ -383,6 +414,13 @@ namespace MR
           image_group = new QActionGroup (this);
           image_group->setExclusive (true);
           connect (image_group, SIGNAL (triggered (QAction*)), this, SLOT (image_select_slot (QAction*)));
+
+          align_atlas_action = image_menu->addAction (tr ("Align tract atlas to this image"),
+                                                      this, SLOT (align_atlas_slot()));
+          align_atlas_action->setToolTip (tr ("Align the built-in tract atlas to the current image.\n\n"
+                                              "This happens automatically for the first FOD loaded; use this\n"
+                                              "to re-align onto a different image."));
+          image_menu->addSeparator();
 
           properties_action = image_menu->addAction (tr ("Properties..."), this, SLOT (image_properties_slot()));
           properties_action->setToolTip (tr ("Display the properties of the current image\n\nShortcut: Ctrl+P"));
@@ -694,6 +732,18 @@ namespace MR
           snap_to_image_action->setChecked (snap_to_image_axes_and_voxel);
           addAction (snap_to_image_action);
 
+          volume_pane_action = toolbar->addAction (QIcon (":/volume_render.svg"),
+              tr ("Volume in ortho view"), this, SLOT (volume_pane_slot()));
+          volume_pane_action->setToolTip (tr (
+                "Draw a volume render in the empty\n"
+                "quadrant of the ortho view\n\n"
+                "Ortho shows three planes in four quadrants;\n"
+                "this fills the fourth. No effect in the other\n"
+                "view modes, or with the planes laid out as a row."));
+          volume_pane_action->setCheckable (true);
+          volume_pane_action->setChecked (Mode::Ortho::show_volume);
+          addAction (volume_pane_action);
+
           toolbar->addSeparator();
 
 
@@ -739,6 +789,7 @@ namespace MR
           menu->addAction (tr ("About mrview++"), this, SLOT (about_slot()));
           menu->addAction (tr ("About Qt"), this, SLOT (aboutQt_slot()));
           menu->addAction (tr ("OpenGL information"), this, SLOT (OpenGL_slot()));
+          menu->addAction (tr ("Keyboard && mouse shortcuts"), this, SLOT (shortcuts_slot()));
 #ifndef MRTRIX_WASM
           menu->addSeparator();
           menu->addAction (tr ("Check for updates..."), this, SLOT (check_for_updates_slot()));
@@ -996,6 +1047,60 @@ namespace MR
 
 
 
+      AtlasRegistration& Window::atlas_registration ()
+      {
+        if (!atlas_registration_)
+          atlas_registration_.reset (new AtlasRegistration (this));
+        return *atlas_registration_;
+      }
+
+
+
+
+      void Window::request_atlas_registration (bool force)
+      {
+        atlas_registration();
+
+        // The atlas is aligned to the FOD loaded in the ODF display tool, not to
+        // whatever is in the view pane: the FOD is the image tractography runs on,
+        // and the template is an anisotropy map, so it is the FOD that it has an
+        // intensity relationship with. The ODF tool is not forced open just to
+        // look - if it is closed there is nothing to align to.
+        std::string path;
+        if (Tool::ODF* odf = Tool::get_tool<Tool::ODF> (false)) {
+          const auto images = odf->list_sh_images();
+          if (images.size())
+            path = images.front().second;
+        }
+        if (path.empty())
+          return;
+
+        // Loading a second FOD does not silently re-align: an alignment the user is
+        // working with should not be replaced behind their back. That only happens
+        // on request, or once the FOD it belonged to is no longer loaded.
+        if (!force) {
+          const std::string& current = atlas_registration_->registered_image();
+          if (current.size() && current != path) {
+            bool still_loaded = false;
+            if (Tool::ODF* odf = Tool::get_tool<Tool::ODF> (false)) {
+              for (const auto& entry : odf->list_sh_images()) {
+                if (entry.second == current) {
+                  still_loaded = true;
+                  break;
+                }
+              }
+            }
+            if (still_loaded)
+              return;
+            atlas_registration_->reset();
+          }
+        }
+
+        atlas_registration_->request (path, AtlasTemplate::Quality::Affine, force);
+      }
+
+
+
       void Window::add_images (vector<std::unique_ptr<MR::Header>>& list)
       {
         if (list.empty())
@@ -1037,6 +1142,13 @@ namespace MR
 
         image_select_slot (new_actions[0]);
         set_image_menu();
+      }
+
+
+
+      void Window::align_atlas_slot ()
+      {
+        request_atlas_registration (true);
       }
 
 
@@ -1095,6 +1207,7 @@ namespace MR
         mode.reset (dynamic_cast<GUI::MRView::Mode::__Action__*> (action)->create());
         mode->set_visible(! image_hide_action->isChecked());
         set_mode_features();
+        refresh_volume_pane_action();
         emit modeChanged();
         glarea->update();
       }
@@ -1142,9 +1255,15 @@ namespace MR
 
         if (!tools_floating) {
 
+          // Tab it in with the tools that share its edge, and only those.
+          // tabifyDockWidget moves a dock into the other's area, so tabbing against
+          // the first open tool whatever edge it was on undid every tool's declared
+          // side: open Tracts first and the left-hand tools all arrived on the right.
+          const Qt::DockWidgetArea area = QMainWindow::dockWidgetArea (tool);
           for (int i = 0; i < tool_group->actions().size(); ++i) {
             Tool::Dock* other_tool = dynamic_cast<Tool::__Action__*>(tool_group->actions()[i])->dock;
-            if (other_tool && other_tool != tool) {
+            if (other_tool && other_tool != tool
+                && QMainWindow::dockWidgetArea (other_tool) == area) {
               QList<QDockWidget*> list = QMainWindow::tabifiedDockWidgets (other_tool);
               if (list.size())
                 QMainWindow::tabifyDockWidget (list.last(), tool);
@@ -1208,6 +1327,37 @@ namespace MR
           glarea->update();
         }
       }
+
+      //! Toggle the volume render that fills the ortho view's spare quadrant.
+      /*! The flag lives on Mode::Ortho because that is what draws it, and it is
+       *  static because the mode object is rebuilt whenever the view mode changes -
+       *  a setting that survived being switched away from and back is what a user
+       *  expects of a toolbar toggle. */
+      //! Only the ortho montage has a spare quadrant to fill; greyed out elsewhere
+      //! says so without the user having to try it and see nothing happen.
+      void Window::refresh_volume_pane_action ()
+      {
+        if (!volume_pane_action)
+          return;
+        volume_pane_action->setEnabled (dynamic_cast<Mode::Ortho*> (mode.get()) != nullptr
+                                        && !Mode::Ortho::show_as_row);
+        volume_pane_action->setChecked (Mode::Ortho::show_volume);
+      }
+
+
+      void Window::volume_pane_slot ()
+      {
+        Mode::Ortho* ortho = dynamic_cast<Mode::Ortho*> (mode.get());
+        if (ortho)
+          ortho->set_show_volume_slot (volume_pane_action->isChecked());
+        else
+          Mode::Ortho::show_volume = volume_pane_action->isChecked();
+        // Turning it on adds a mode to the scene, so the image's shader has to be
+        // allowed to serve both.
+        set_mode_features();
+        updateGL();
+      }
+
 
 
 
@@ -1574,11 +1724,22 @@ namespace MR
         mode_action_group->actions()[2]->setEnabled (mode->features & Mode::TiltRotate);
         if (!mode_action_group->checkedAction()->isEnabled())
           mode_action_group->actions()[0]->setChecked (true);
+        // Transparency and thresholding are always allowed. They are properties of
+        // the image rather than of a mode - the slice shader simply does not read the
+        // alpha uniform, so declaring it costs a uniform and changes no pixel - and
+        // gating them meant the controls vanished from the View panel depending on
+        // what was on screen. It also stopped being tenable the moment Ortho grew a
+        // volume pane: the mode is Ortho, the thing being looked at is a volume
+        // render, and Volume's fragment shader reads those uniforms unconditionally.
+        // Without them it is a shader that fails to compile, not a picture that looks
+        // slightly wrong.
+        const int features = mode->features | Mode::ShaderTransparency | Mode::ShaderThreshold;
+
         if (image())
           image()->set_allowed_features (
-              mode->features & Mode::ShaderThreshold,
-              mode->features & Mode::ShaderTransparency,
-              mode->features & Mode::ShaderLighting);
+              features & Mode::ShaderThreshold,
+              features & Mode::ShaderTransparency,
+              features & Mode::ShaderLighting);
       }
 
 
@@ -1680,6 +1841,113 @@ namespace MR
       }
 
 
+
+
+      void Window::shortcuts_slot ()
+      {
+        // The keyboard section is built by walking the real menus rather than from
+        // a hand-written list, so it cannot drift out of step with the bindings.
+        // Sub-menus are walked too, and actions are de-duplicated because the same
+        // action can appear in more than one menu.
+        std::string message ("<h2>Keyboard</h2>");
+
+        std::set<QAction*> seen;
+        std::function<void (QMenu*, vector<std::pair<std::string,std::string>>&)> collect =
+          [&] (QMenu* menu, vector<std::pair<std::string,std::string>>& out) {
+            for (QAction* action : menu->actions()) {
+              if (action->menu()) {
+                collect (action->menu(), out);
+                continue;
+              }
+              if (action->isSeparator() || action->shortcut().isEmpty())
+                continue;
+              if (!seen.insert (action).second)
+                continue;
+              out.push_back ({ action->text().remove ('&').toStdString(),
+                               action->shortcut().toString (QKeySequence::NativeText).toStdString() });
+            }
+          };
+
+        auto emit_group = [&message] (const std::string& title,
+                                      const vector<std::pair<std::string,std::string>>& entries) {
+          if (entries.empty())
+            return;
+          message += "<h4>" + title + "</h4><table>";
+          for (const auto& entry : entries)
+            message += "<tr><td><b>" + entry.second + "</b></td><td width=\"20\"></td><td>" +
+                       entry.first + "</td></tr>";
+          message += "</table>";
+        };
+
+        // Recursive, not direct children only: the colourmap menu belongs to its
+        // toolbar button rather than to the window, and it holds real shortcuts.
+        // Sub-menus are skipped at the top level since collect() already walks them
+        // under their parent, which keeps them grouped where the user found them.
+        for (QMenu* menu : findChildren<QMenu*>()) {
+          if (qobject_cast<QMenu*> (menu->parentWidget()))
+            continue;
+          std::string title = menu->title().remove ('&').toStdString();
+          if (title.empty()) {
+            // Menus owned by a toolbar button have no title of their own.
+            if (QToolButton* owner = qobject_cast<QToolButton*> (menu->parentWidget()))
+              title = owner->text().remove ('&').toStdString();
+            if (title.empty())
+              title = "Other";
+          }
+          vector<std::pair<std::string,std::string>> entries;
+          collect (menu, entries);
+          emit_group (title, entries);
+        }
+
+        // Anything bound on the window but not reachable through a menu.
+        vector<std::pair<std::string,std::string>> orphans;
+        for (QAction* action : actions()) {
+          if (action->isSeparator() || action->shortcut().isEmpty())
+            continue;
+          if (!seen.insert (action).second)
+            continue;
+          orphans.push_back ({ action->text().remove ('&').toStdString(),
+                               action->shortcut().toString (QKeySequence::NativeText).toStdString() });
+        }
+        emit_group ("Other", orphans);
+
+        // The mouse bindings are not actions, so they are listed explicitly - but
+        // the modifier names come from the live configuration rather than being
+        // hard-coded, since MRViewMoveModifierKey and MRViewRotateModifierKey can
+        // both be reassigned.
+        const std::string move_mod = get_modifier (MoveModifier);
+        const std::string rotate_mod = get_modifier (RotateModifier);
+
+        message += "<h2>Mouse</h2><table>"
+                   "<tr><td><b>Left drag</b></td><td width=\"20\"></td><td>depends on the active mouse mode: "
+                   "move the focus, pan, or tilt</td></tr>"
+                   "<tr><td><b>Right drag</b></td><td></td><td>depends on the active mouse mode: "
+                   "adjust brightness/contrast, pan through the slice stack, or rotate</td></tr>"
+                   "<tr><td><b>Middle drag</b></td><td></td><td>pan, in every mode</td></tr>"
+                   "<tr><td><b>" + move_mod + " + drag</b></td><td></td><td>temporarily switch to pan/move</td></tr>"
+                   "<tr><td><b>" + rotate_mod + " + drag</b></td><td></td><td>temporarily switch to tilt/rotate</td></tr>"
+                   "<tr><td><b>Wheel</b></td><td></td><td>change slice</td></tr>"
+                   "<tr><td><b>Shift + wheel</b></td><td></td><td>change slice, 10 at a time</td></tr>"
+                   "<tr><td><b>" + get_modifier (Qt::ControlModifier) + " + wheel</b></td><td></td><td>zoom</td></tr>"
+                   "<tr><td><b>Right button + wheel</b></td><td></td><td>cycle through the loaded images</td></tr>"
+                   "</table>";
+
+        QDialog dialog (this);
+        dialog.setWindowTitle (tr ("mrview++ shortcuts"));
+        QVBoxLayout* layout = new QVBoxLayout (&dialog);
+        QTextBrowser* text = new QTextBrowser (&dialog);
+        text->setHtml (qstr (message));
+        text->setOpenExternalLinks (false);
+        layout->addWidget (text);
+        QPushButton* close = new QPushButton (tr ("Close"), &dialog);
+        connect (close, SIGNAL (clicked()), &dialog, SLOT (accept()));
+        layout->addWidget (close);
+        // Long enough to show a useful chunk of the list without covering the view.
+        dialog.resize (520, 640);
+        dialog.exec();
+      }
+
+
       void Window::paintGL ()
       {
         GL::assert_context_is_current();
@@ -1751,6 +2019,7 @@ namespace MR
         File::Config::get_RGB ("MRViewImageBackgroundColour", background_colour, 0.0f, 0.0f, 0.0f);
         gl::ClearColor (background_colour[0], background_colour[1], background_colour[2], 1.0);
         mode.reset (dynamic_cast<Mode::__Action__*> (mode_group->actions()[0])->create());
+        refresh_volume_pane_action();
         set_mode_features();
 
         GL::assert_context_is_current();
@@ -1985,10 +2254,71 @@ namespace MR
 
 
 
+      void Window::toggle_tool_panels ()
+      {
+        // Restore first: if anything was hidden by the last double-click, this one
+        // puts it back, so the gesture is its own undo.
+        if (hidden_tool_docks.size()) {
+          for (QDockWidget* dock : hidden_tool_docks)
+            if (dock)
+              dock->show();
+          hidden_tool_docks.clear();
+          return;
+        }
+        for (QDockWidget* dock : findChildren<QDockWidget*>()) {
+          if (!dock->isVisible() || dock->isFloating())
+            continue;   // a floating panel was deliberately put where it is
+          dock->hide();
+          hidden_tool_docks.push_back (dock);
+        }
+      }
+
+
+
+      void Window::restore_autosave_slot ()
+      {
+        const std::string path = autosave_session_path();
+        if (path.empty() || !Path::is_file (path)) {
+          QMessageBox::information (this, "Restore session",
+              "No auto-saved session was found.\n\nOne is written to your home directory "
+              "every couple of minutes, and when the program exits with an image open.");
+          return;
+        }
+        // Loading a session replaces what is on screen. From the Session panel that
+        // takes a deliberate click on a labelled button; on a keyboard shortcut it
+        // takes two fingers, so anything worth losing is worth asking about first.
+        if (!image_group->actions().isEmpty()) {
+          const auto answer = QMessageBox::question (this, "Restore session",
+              qstr ("Replace the current scene with the auto-saved session?\n\n" + path),
+              QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+          if (answer != QMessageBox::Yes)
+            return;
+        }
+        if (!load_session (path))
+          QMessageBox::warning (this, "Restore session",
+              qstr ("Failed to restore the auto-saved session from\n" + path));
+      }
+
+
+
       std::string Window::autosave_session_path ()
       {
         try {
           return Path::join (Path::home(), ".mrview++-session.json");
+        } catch (...) {
+          return std::string();
+        }
+      }
+
+
+
+      std::string Window::autosave_session_dir (bool create)
+      {
+        try {
+          const std::string dir = Path::join (Path::home(), ".mrview++-session");
+          if (create && !Path::exists (dir))
+            File::mkdir (dir);
+          return dir;
         } catch (...) {
           return std::string();
         }
@@ -2001,10 +2331,22 @@ namespace MR
         try {
           nlohmann::json j;
 
+          // Only record images that can actually be reopened. One test covers both
+          // ways an entry becomes useless: a file that has since moved, and an image
+          // whose name was never a path in the first place - a DICOM series is named
+          // "PATIENT (ID) [MR] series", so saving it guarantees a failure on every
+          // future launch. Restoring a DICOM series would need the folder *and* the
+          // series identity (and a folder open prompts for the series), so dropping
+          // it is better than nagging.
           vector<std::string> main_names;
           QList<QAction*> images = image_group->actions();
-          for (int n = 0; n < images.size(); ++n)
-            main_names.push_back (static_cast<const Image*> (images[n])->header().name());
+          for (int n = 0; n < images.size(); ++n) {
+            const std::string name = static_cast<const Image*> (images[n])->header().name();
+            if (Path::is_file (name))
+              main_names.push_back (name);
+            else
+              INFO ("session: not saving \"" + name + "\" - it cannot be reopened by name");
+          }
           j["main"] = main_names;
 
           QList<QAction*> actions = tool_group->actions();
@@ -2044,26 +2386,44 @@ namespace MR
           nlohmann::json j;
           in >> j;
 
+          // What a restore could not bring back. Collected rather than displayed:
+          // a moved file is an ordinary consequence of reorganising data, not an
+          // error worth a modal dialog in front of a window that has not appeared
+          // yet - and there can be one per entry. WARN goes to the console only,
+          // since mrview replaces Exception::display_func with a dialog but leaves
+          // report_to_user_func alone (gui/dialog/dialog.cpp).
+          vector<std::string> skipped;
+
           if (j.find ("main") != j.end() && j["main"].is_array()) {
             vector<std::unique_ptr<MR::Header>> headers;
             for (const auto& p : j["main"].get<vector<std::string>>()) {
               try {
                 headers.push_back (make_unique<MR::Header> (MR::Header::open (p)));
-              } catch (Exception& e) {
-                e.display();
+              } catch (Exception&) {
+                skipped.push_back (p);
               }
             }
             if (headers.size())
               add_images (headers);
           }
 
+          // For one build the generator was hosted inside the Tracts panel and its
+          // state was written under "tracts". It is a tool of its own again, so lift
+          // that back to the top level rather than dropping it; a session written by
+          // that build still restores.
+          if (j.find ("tracts") != j.end() && j["tracts"].is_object()
+              && j["tracts"].find ("trackgen") != j["tracts"].end()
+              && j.find ("trackgen") == j.end()) {
+            j["trackgen"] = j["tracts"]["trackgen"];
+          }
+
           // Map each session JSON key to the menu name of the owning tool.
           static const std::vector<std::pair<std::string, std::string>> key_to_tool = {
             { "overlays", "Overlay" },
-            { "tracts",   "Tractography" },
+            { "tracts",   "Tracts" },
+            { "trackgen", "Fiber gen" },
             { "meshes",   "Mesh display" },
-            { "atlases",  "Atlas" },
-            { "trackgen", "Track generation" }
+            { "atlases",  "Atlas" }
           };
           for (const auto& kv : key_to_tool) {
             if (j.find (kv.first) == j.end())
@@ -2078,11 +2438,24 @@ namespace MR
                 break;
               if (!tool_action->dock)
                 actions[i]->trigger();   // opens the dock synchronously
-              if (tool_action->dock && tool_action->dock->tool)
-                tool_action->dock->tool->set_session (j[kv.first]);
+              if (tool_action->dock && tool_action->dock->tool) {
+                // Per tool, so one tool's bad state cannot cost every later tool its
+                // own: the loop order used to mean a throw here silently dropped
+                // tracts, meshes, atlases and the Track generation setup.
+                try {
+                  tool_action->dock->tool->set_session (j[kv.first]);
+                } catch (Exception& e) {
+                  skipped.push_back (kv.second + " (" + e[0] + ")");
+                }
+              }
               break;
             }
           }
+
+          if (skipped.size())
+            WARN ("session: skipped " + str(skipped.size()) + " entr" + (skipped.size() == 1 ? "y" : "ies")
+                  + " that could not be restored: " + join (skipped, ", ")
+                  + " (they will be dropped from the session when it is next saved)");
 
           updateGL();
           return true;
@@ -2131,6 +2504,7 @@ namespace MR
 
         try {
 
+
           // see whether option is claimed by any tools:
           size_t tool_id = 0;
           std::string stub;
@@ -2138,6 +2512,32 @@ namespace MR
 
 
           // process general options:
+          if (opt.opt->is ("tool.open")) {
+            // Compared without case or spaces, so "roi editor", "ROI Editor" and
+            // "ROIeditor" all find the same panel.
+            auto flatten = [] (const std::string& in) {
+              std::string out;
+              for (const char c : in)
+                if (!std::isspace (static_cast<unsigned char> (c)))
+                  out += char (std::tolower (static_cast<unsigned char> (c)));
+              return out;
+            };
+            const std::string wanted = flatten (std::string (opt[0]));
+            for (QAction* action : tool_group->actions()) {
+              if (flatten (action->text().toStdString()) != wanted)
+                continue;
+              if (!action->isChecked()) {
+                action->setChecked (true);
+                select_tool_slot (action);
+              }
+              return;
+            }
+            std::string known;
+            for (QAction* action : tool_group->actions())
+              known += (known.size() ? ", " : "") + action->text().toStdString();
+            throw Exception ("no tool named \"" + std::string (opt[0]) + "\"; available: " + known);
+          }
+
           if (opt.opt->is ("mode")) {
             int n = int(opt[0]) - 1;
             if (n < 0 || n >= mode_group->actions().size())
@@ -2411,6 +2811,12 @@ namespace MR
 
           + Option ("load", "Load image specified and make it current.").allow_multiple()
           +   Argument ("image").type_image_in()
+
+          + Option ("tool.open", "Open a tool panel by the name it has in the Tools menu, "
+                                 "e.g. \"ROI editor\". Matching ignores case and spaces. Useful for "
+                                 "scripting a demonstration or a documentation screenshot, where the "
+                                 "panel has to be on screen and no option of its own would open it.").allow_multiple()
+          +   Argument ("name").type_text()
 
           + Option ("reset", "Reset the view according to current image. This resets the FOV, projection and focus.").allow_multiple()
 

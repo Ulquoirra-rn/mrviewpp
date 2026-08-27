@@ -41,6 +41,11 @@ namespace MR
         { MEMALIGN(Capture)
           Q_OBJECT
           public:
+
+            //! Docked on the left, not with the rest.
+            /*! Left because the capture settings stay in view while the scene they
+             *  frame is arranged with the view controls. */
+            static Qt::DockWidgetArea preferred_dock_area () { return Qt::LeftDockWidgetArea; }
             Capture (Dock* parent);
             virtual ~Capture() {}
 

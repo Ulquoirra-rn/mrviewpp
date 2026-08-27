@@ -144,7 +144,9 @@ namespace MR
              std::atomic<bool> seg_running { false };
              std::atomic<bool> seg_cancel { false };
              void set_seg_controls_enabled (bool on);
-             void seg_show_progress (const QString& msg);
+             //! Wall-clock for the background segmentation, reported on completion.
+            MR::Timer seg_clock;
+            void seg_show_progress (const QString& msg);
              void seg_finish (const QString& msg);
 
              // Interactive scroll-driven 2D region-grow state:

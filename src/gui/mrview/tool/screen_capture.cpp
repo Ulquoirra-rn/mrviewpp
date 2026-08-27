@@ -472,7 +472,11 @@ namespace MR
             + Option ("capture.prefix", "Set the output file prefix for the screen capture tool.").allow_multiple()
             +   Argument ("string").type_text()
 
-            + Option ("capture.grab", "Start the screen capture process.").allow_multiple();
+            + Option ("capture.grab", "Start the screen capture process.").allow_multiple()
+
+            + Option ("capture.window", "Save a screenshot of the whole window - tool panels and "
+                                        "toolbar included - rather than the image area alone. "
+                                        "Uses the same folder and prefix as capture.grab.").allow_multiple();
         }
 
         bool Capture::process_commandline_option (const MR::App::ParsedOption& opt)
@@ -496,6 +500,20 @@ namespace MR
             this->window().updateGL();
             qApp->processEvents();
             on_screen_capture();
+            return true;
+          }
+
+          if (opt.opt->is ("capture.window")) {
+            this->window().updateGL();
+            // Twice: the first pass lets the panels this run has opened lay
+            // themselves out, so the shot is of the finished window.
+            qApp->processEvents();
+            qApp->processEvents();
+            const std::string prefix (prefix_textbox->text().toUtf8().constData());
+            const size_t index = size_t (start_index->value());
+            const std::string path = Path::join (current_folder, prefix + printf ("%04d.png", index));
+            this->window().captureWindow (path);
+            start_index->setValue (int (index) + 1);
             return true;
           }
 

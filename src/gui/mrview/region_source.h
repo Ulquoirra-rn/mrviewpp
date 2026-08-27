@@ -18,6 +18,8 @@
 #define __gui_mrview_region_source_h__
 
 #include <QColor>
+#include <QMenu>
+#include <functional>
 
 #include "image.h"
 #include "types.h"
@@ -84,6 +86,18 @@ namespace MR
 
       //! Every region currently offered by every open tool.
       void collect_regions (vector<RegionRef>&);
+
+
+      //! Build the region part of a "pick a region" menu, grouped and nested.
+      /*! Providers become sections. A region whose name contains a slash is nested
+       *  under that first component, so the built-in atlas arrives as
+       *  category -> bundle rather than 102 entries in one flat list - the same
+       *  shape as the two drop-downs in the Track generation tool.
+       *
+       *  \a add_actions is called with the submenu for each region and must add the
+       *  per-region choices (roles, or passes-through/avoids) to it. */
+      void build_region_menu (QMenu& menu, const vector<RegionRef>& regions,
+                              const std::function<void(QMenu*, const RegionRef&)>& add_actions);
 
       //! Find the provider that owns a region reference (nullptr if gone).
       RegionProvider* provider_for (const RegionRef&);

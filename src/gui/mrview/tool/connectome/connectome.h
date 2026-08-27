@@ -75,6 +75,11 @@ namespace MR
 
           public:
 
+            //! Docked on the left, not with the rest.
+            /*! Left because the matrix and its node controls are read against the
+             *  image rather than instead of it. */
+            static Qt::DockWidgetArea preferred_dock_area () { return Qt::LeftDockWidgetArea; }
+
             Connectome (Dock* parent);
 
             virtual ~Connectome ();

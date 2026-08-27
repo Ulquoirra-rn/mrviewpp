@@ -54,20 +54,47 @@ namespace MR
         }
 
 
+        namespace
+        {
+          //! "  label            value unit", padded so a column of them lines up.
+          /*! Only meaningful in a fixed-pitch font, which is why the dialog that shows
+           *  this asks for one. */
+          std::string row (const std::string& label, const std::string& value,
+                           const std::string& unit = std::string())
+          {
+            std::string out = "  " + label;
+            out.resize (std::max (out.size(), size_t (20)), ' ');
+            std::string number = value;
+            if (number.size() < 10)
+              number = std::string (10 - number.size(), ' ') + number;
+            out += number;
+            if (unit.size())
+              out += " " + unit;
+            return out + "\n";
+          }
+        }
+
+
+
         std::string BundleStats::as_text (const std::string& name) const
         {
           if (!count)
-            return name + ": no streamlines";
+            return name + "\n" + row ("streamlines", "0") + "\n";
           return name + "\n"
-               + "  streamlines:    " + str(count) + "\n"
-               + "  length (mm):    mean " + str(mean_length,5) + ", median " + str(median_length,5)
-                 + ", sd " + str(stdev_length,4) + "\n"
-               + "                  range " + str(min_length,5) + " - " + str(max_length,5) + "\n"
-               + "  total length:   " + str(total_length,6) + " mm\n"
-               + "  mean span:      " + str(mean_span,5) + " mm\n"
-               + "  mean curvature: " + str(mean_curvature,4) + " deg/mm\n"
-               + "  volume:         " + str(volume,6) + " mm3 (" + str(volume_voxels) + " voxels)";
+               + row ("streamlines",    str(count))
+               + row ("mean length",    str(mean_length,5),    "mm")
+               + row ("median length",  str(median_length,5),  "mm")
+               + row ("length sd",      str(stdev_length,4),   "mm")
+               + row ("length range",   str(min_length,5) + " - " + str(max_length,5), "mm")
+               + row ("total length",   str(total_length,6),   "mm")
+               + row ("mean span",      str(mean_span,5),      "mm")
+               + row ("mean curvature", str(mean_curvature,4), "deg/mm")
+               + row ("volume",         str(volume,6),         "mm3 (" + str(volume_voxels) + " voxels)")
+               + "\n";
         }
+
+
+
 
 
 

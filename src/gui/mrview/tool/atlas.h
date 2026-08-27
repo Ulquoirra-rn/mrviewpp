@@ -76,7 +76,9 @@ namespace MR
             void focus_changed_slot ();
             void hover_changed_slot ();
             void region_activated_slot (QListWidgetItem*);
-            void region_highlight_slot (QListWidgetItem*, QListWidgetItem*);
+            void region_check_slot (QListWidgetItem*);
+            void region_filter_slot (const QString&);
+            void clear_region_ticks_slot ();
 
           protected:
             Model* atlas_list_model;
@@ -87,6 +89,7 @@ namespace MR
             QLabel* focus_region_label;
             QLabel* hover_region_label;
             QListWidget* region_list;
+            QLineEdit* region_filter;
             bool syncing_region_list;
             std::unique_ptr<Regions> regions;
 

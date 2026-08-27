@@ -14,10 +14,19 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <QDialogButtonBox>
+#include <QPlainTextEdit>
+#include <QFontDatabase>
+#include <QClipboard>
 #include <QMessageBox>
+#include <cctype>
 #include <cstring>
 
 #include "mrtrix.h"
+#include "algo/loop.h"
+#include "transform.h"
+#include "timer.h"
+#include <limits>
 #include "file/path.h"
 #include "gui/gui.h"
 #include "dwi/tractography/file.h"
@@ -32,8 +41,12 @@
 #include "file/ofstream.h"
 #include <set>
 
+#include "gui/mrview/tool/overlay.h"
 #include "gui/mrview/tool/roi_editor/roi.h"
 
+#include "dwi/tractography/recognition/cluster.h"
+#include "dwi/tractography/recognition/refine.h"
+#include "gui/mrview/atlas_registration.h"
 #include "dwi/tractography/roi.h"
 #include "gui/mrview/tool/tractography/bundle_stats.h"
 #include "gui/dialog/file.h"
@@ -43,15 +56,62 @@
 #include "gui/opengl/lighting.h"
 #include "gui/lighting_dock.h"
 
+#include <memory>
+
 
 namespace MR
 {
+
+  namespace
+  {
+    //! The population probability map for a bundle, opened against the atlas fit.
+    /*! Null when the atlas has no map for it, which is ordinary rather than an error:
+     *  the HCP1065 release covers 67 of the atlas's 102 bundles. The map stays in atlas
+     *  space and subject points are taken back into it through the inverse fit, so
+     *  nothing is resampled. */
+    std::unique_ptr<DWI::Tractography::Recognition::PopulationMap>
+    open_population_map (const std::string& bundle,
+                         const GUI::MRView::AtlasRegistration& registration)
+    {
+      const std::string path = GUI::MRView::AtlasTemplate::population_map_path (bundle);
+      if (path.empty())
+        return nullptr;
+      try {
+        return std::unique_ptr<DWI::Tractography::Recognition::PopulationMap> (
+            new DWI::Tractography::Recognition::PopulationMap (
+                path, registration.fit().mni_to_subject.inverse()));
+      } catch (Exception& e) {
+        WARN ("could not read the population map \"" + path + "\": " + e[0]);
+        return nullptr;
+      }
+    }
+  }
+
   namespace GUI
   {
     namespace MRView
     {
       namespace Tool
       {
+
+        // The stops the strictness slider snaps to, as percentages of the matched
+        // streamlines to drop. Evenly spaced on screen, one detent each; 0 leaves the
+        // distance threshold in charge and 90 is the most a run is allowed to drop.
+        // 50 is here because it is the default a run applies, so the control opens on
+        // a landmark rather than between two.
+        static const int strictness_landmarks[] = { 0, 25, 50, 75, 90 };
+        static const int num_strictness_landmarks = 5;
+
+        //! The landmark nearest a percentage, for showing a value that is not on one.
+        static int strictness_landmark_index (int percent)
+        {
+          int best = 0;
+          for (int i = 1; i != num_strictness_landmarks; ++i)
+            if (std::abs (strictness_landmarks[i] - percent) < std::abs (strictness_landmarks[best] - percent))
+              best = i;
+          return best;
+        }
+
         const char* tractogram_geometry_types[] = { "pseudotubes", "lines", "points", nullptr };
 
         TrackGeometryType geometry_index2type (const int idx)
@@ -201,16 +261,7 @@ namespace MR
           scalar_file_options (nullptr),
           lighting_dock (nullptr) {
 
-            float voxel_size;
-            if (window().image()) {
-              voxel_size = (window().image()->header().spacing(0) +
-                            window().image()->header().spacing(1) +
-                            window().image()->header().spacing(2)) / 3.0f;
-            } else {
-              voxel_size = 2.5;
-            }
-
-            slab_thickness  = 2 * voxel_size;
+            slab_thickness = default_slab_thickness();
 
             VBoxLayout* main_box = new VBoxLayout (this);
             HBoxLayout* hlayout = new HBoxLayout;
@@ -243,6 +294,21 @@ namespace MR
             hlayout->addWidget (button, 1);
 
             main_box->addLayout (hlayout, 0);
+
+            // Directly under the open/close row, so the batch show/hide controls sit
+            // with the other list-wide actions rather than at the foot of the panel.
+            HBoxLayout* checkall_layout = new HBoxLayout;
+            QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+            check_all_button->setObjectName ("batchbtn");
+            check_all_button->setToolTip (tr ("Show every tractogram by checking its box"));
+            connect (check_all_button, &QPushButton::clicked, this, [this]{ tractogram_list_model->check_all(); window().updateGL(); });
+            checkall_layout->addWidget (check_all_button, 1);
+            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+            uncheck_all_button->setObjectName ("batchbtn");
+            uncheck_all_button->setToolTip (tr ("Hide every tractogram by unchecking its box"));
+            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ tractogram_list_model->uncheck_all(); window().updateGL(); });
+            checkall_layout->addWidget (uncheck_all_button, 1);
+            main_box->addLayout (checkall_layout, 0);
 
             tractogram_list_view = new QListView (this);
             tractogram_list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
@@ -320,6 +386,7 @@ namespace MR
             thickness_slider->setRange (-1000,1000);
             thickness_slider->setSliderPosition (0);
             connect (thickness_slider, SIGNAL (valueChanged (int)), this, SLOT (line_thickness_slot (int)));
+            set_slider_steps (thickness_slider);
             hlayout->addWidget (thickness_slider);
 
             main_box->addLayout (hlayout);
@@ -328,10 +395,9 @@ namespace MR
             main_box->addWidget (scalar_file_options);
 
             // --- editing / selection / statistics ---
-            QGroupBox* edit_groupbox = new QGroupBox (tr ("Edit && measure"));
-            main_box->addWidget (edit_groupbox);
-            GridLayout* edit_grid = new GridLayout;
-            edit_groupbox->setLayout (edit_grid);
+            edit_section = new Section (tr ("Edit && measure"), this, false);
+            main_box->addWidget (edit_section);
+            GridLayout* edit_grid = new GridLayout (edit_section->contents());
 
             edit_enable_box = new QCheckBox (tr ("enable editing"), this);
             edit_enable_box->setToolTip (
@@ -367,14 +433,6 @@ namespace MR
             connect (split_button, SIGNAL (clicked()), this, SLOT (split_selection_slot()));
             edit_grid->addWidget (split_button, 3, 0, 1, 3);
 
-            stats_button = new QPushButton (tr ("Statistics..."), this);
-            connect (stats_button, SIGNAL (clicked()), this, SLOT (statistics_slot()));
-            edit_grid->addWidget (stats_button, 4, 0, 1, 2);
-            profile_button = new QPushButton (tr ("Profile..."), this);
-            profile_button->setToolTip (tr ("Sample an image along the bundle and export the profile"));
-            connect (profile_button, SIGNAL (clicked()), this, SLOT (profile_slot()));
-            edit_grid->addWidget (profile_button, 4, 2);
-
             rule_list = new QListWidget (this);
             rule_list->setToolTip (
                 tr ("Region criteria currently applied to the selected tractogram.\n"
@@ -399,6 +457,88 @@ namespace MR
             rule_refresh_timer->setSingleShot (true);
             connect (rule_refresh_timer, SIGNAL (timeout()), this, SLOT (reapply_rules_slot()));
             connect (&window(), SIGNAL (regionsChanged()), this, SLOT (regions_changed_slot()));
+
+            // --- refine the selected tract against its atlas bundle ---
+            // A property of one tract, not of the tool: it re-derives that tract's
+            // result from the candidates it already holds. Which is why it lives here
+            // next to the list, and not in the generator - with several bundles
+            // reconstructed in one run, a control in the generator cannot say which
+            // of them it acts on.
+            refine_section = new Section (tr ("Refine"), this, false);
+            main_box->addWidget (refine_section);
+            GridLayout* refine_grid = new GridLayout (refine_section->contents());
+
+            QLabel* strictness_title = new QLabel (tr ("strictness"));
+            strictness_title->setToolTip (
+                tr ("Drop the streamlines furthest from the atlas bundle. Further right is\n"
+                    "stricter and keeps fewer; fully left keeps everything the run matched.\n\n"
+                    "Nothing is re-tracked: the streamlines this run rejected are still\n"
+                    "here, so any setting is re-derived from them."));
+            refine_grid->addWidget (strictness_title, 0, 0);
+            refine_strictness = new QSlider (Qt::Horizontal, this);
+            // The slider's units are *landmarks*, not percent: one detent per stop,
+            // evenly spaced across the groove. A continuous groove offered a hundred
+            // values that differ by a streamline or two, so a drag of one pixel
+            // re-derived the tract for no visible change, and landing on a value
+            // again after moving away was a matter of luck. Five stops can be hit
+            // deliberately, and stepped through with the arrow keys.
+            // strictness_landmarks[] holds what each stop means; 0 = keep everything
+            // the run matched, 90 = keep only the closest tenth. Higher is stricter
+            // and keeps less, which is the only way round the word reads.
+            refine_strictness->setRange (0, num_strictness_landmarks - 1);
+            // Its stops are already one apart; this is for the marks on the groove.
+            set_slider_steps (refine_strictness, num_strictness_landmarks - 1);
+            // The same default a run applies, so the slider opens where the tract
+            // actually is rather than at a value it was never refined with.
+            refine_strictness->setValue (strictness_landmark_index (0));
+            refine_strictness->setToolTip (strictness_title->toolTip());
+            refine_strictness_percent = 0;
+            // Only emit on release: while the drag is live, update_refine_controls()
+            // writes the slider back from the tract it is in the middle of changing,
+            // which fights the drag.
+            refine_strictness->setTracking (false);
+            refine_grid->addWidget (refine_strictness, 0, 1);
+            refine_count_label = new QLabel ("");
+            refine_grid->addWidget (refine_count_label, 0, 2);
+
+            refine_competitive = new QCheckBox (tr ("count a neighbouring bundle's better fit against a fibre"), this);
+            refine_competitive->setToolTip (tr ("For each streamline, ask which atlas bundle it is closest to rather than only\nhow close it is to this one. A neighbour that fits it better does not delete\nit: it adds to the streamline's score, in proportion to how much better, so\nstrictness drops the contested ones first.\n\nMeasured on the projection category at 15 mm, 400 genuine and 400 bent\nstreamlines refined together: at 50% strictness all 400 genuine survive and 1\nof the bent ones does. Against the whole category, no medial lemniscus passes\nas corticospinal tract and no corticospinal streamline bent through the\nthalamus survives, while the tract itself keeps 400 of 400 - three more than\nrejecting outright ever kept."));
+            refine_grid->addWidget (refine_competitive, 1, 0, 1, 2);
+            refine_neighbours_button = new QPushButton (tr ("Neighbours..."), this);
+            refine_neighbours_button->setToolTip (
+                tr ("Choose which bundles compete for this tract's streamlines"));
+            refine_grid->addWidget (refine_neighbours_button, 1, 2);
+
+            QLabel* refine_prune_title = new QLabel (tr ("prune outliers"));
+            refine_prune_title->setToolTip (
+                tr ("Drop streamlines far from the rest of what was kept, measured against\n"
+                    "this tract's own spread rather than a fixed distance."));
+            refine_grid->addWidget (refine_prune_title, 2, 0);
+            refine_prune = new QComboBox (this);
+            refine_prune->addItem (tr ("off"));
+            refine_prune->addItem (tr ("low"));
+            refine_prune->addItem (tr ("medium"));
+            refine_prune->addItem (tr ("high"));
+            refine_prune->setToolTip (refine_prune_title->toolTip());
+            refine_grid->addWidget (refine_prune, 2, 1);
+            refine_revert_button = new QPushButton (tr ("Revert"), this);
+            refine_revert_button->setToolTip (tr ("Back to the settings this run used"));
+            refine_grid->addWidget (refine_revert_button, 2, 2);
+
+            refine_status_label = new QLabel ("");
+            refine_status_label->setWordWrap (true);
+            refine_grid->addWidget (refine_status_label, 3, 0, 1, 3);
+
+            // Dragging a slider emits a value per pixel; re-deriving on each would
+            // queue work faster than it completes. One shot after the drag settles.
+            refine_timer = new QTimer (this);
+            refine_timer->setSingleShot (true);
+            connect (refine_timer, SIGNAL (timeout()), this, SLOT (apply_refine_slot()));
+            connect (refine_strictness, SIGNAL (valueChanged(int)), this, SLOT (strictness_moved_slot(int)));
+            connect (refine_competitive, SIGNAL (toggled(bool)), this, SLOT (refine_setting_changed()));
+            connect (refine_prune, SIGNAL (currentIndexChanged(int)), this, SLOT (refine_setting_changed()));
+            connect (refine_neighbours_button, SIGNAL (clicked()), this, SLOT (refine_neighbours_slot()));
+            connect (refine_revert_button, SIGNAL (clicked()), this, SLOT (refine_revert_slot()));
 
             QGroupBox* general_groupbox = new QGroupBox ("General options");
             GridLayout* general_opt_grid = new GridLayout;
@@ -428,6 +568,9 @@ namespace MR
             slab_entry->setValue (slab_thickness);
             slab_entry->setMin (0.0);
             connect (slab_entry, SIGNAL (valueChanged()), this, SLOT (on_slab_thickness_slot()));
+            // The image can arrive - or be replaced by one with a different voxel
+            // size - long after this panel was built.
+            connect (&window(), SIGNAL (imageChanged()), this, SLOT (main_image_changed_slot()));
             slab_layout->addWidget (slab_entry, 0, 1);
 
             lighting_group_box = new QGroupBox (tr("use lighting"));
@@ -468,6 +611,38 @@ namespace MR
             action = new QAction("&Colour by (track) scalar file", this);
             connect (action, SIGNAL(triggered()), this, SLOT (colour_by_scalar_file_slot()));
             track_option_menu->addAction (action);
+            track_option_menu->addSeparator();
+            action = new QAction("&Statistics...", this);
+            action->setToolTip (tr ("Streamline count, length, curvature, span and bundle volume"));
+            connect (action, SIGNAL(triggered()), this, SLOT (statistics_slot()));
+            track_option_menu->addAction (action);
+            action = new QAction("Along-tract &profile...", this);
+            action->setToolTip (tr ("Sample an image at 100 points along the bundle and write the profile as CSV"));
+            connect (action, SIGNAL(triggered()), this, SLOT (profile_slot()));
+            track_option_menu->addAction (action);
+            track_option_menu->addSeparator();
+            combine_action = new QAction("Com&bine into one tract...", this);
+            combine_action->setToolTip (tr ("Merge the selected tracts into one and close the originals"));
+            connect (combine_action, SIGNAL(triggered()), this, SLOT (combine_tracts_slot()));
+            track_option_menu->addAction (combine_action);
+            action = new QAction("Cluster into &bundles...", this);
+            action->setToolTip (tr ("Split into bundles by shape (QuickBundles); loads the streamlines into memory"));
+            connect (action, SIGNAL(triggered()), this, SLOT (cluster_tracts_slot()));
+            track_option_menu->addAction (action);
+            action = new QAction("&Refine against an atlas bundle...", this);
+            action->setToolTip (tr ("Keep the streamlines that belong to a named bundle, and drop "
+                                    "the ones a neighbouring bundle fits better"));
+            connect (action, SIGNAL(triggered()), this, SLOT (refine_tracts_slot()));
+            track_option_menu->addAction (action);
+            rejected_action = new QAction("Split streamlines &rejected by the distance metric", this);
+            rejected_action->setToolTip (tr ("List what auto-tracking discarded on its shape distance, as its own tract"));
+            connect (rejected_action, SIGNAL(triggered()), this, SLOT (split_rejected_slot()));
+            track_option_menu->addAction (rejected_action);
+            track_option_menu->addSeparator();
+            action = new QAction("Show &endpoints as overlay", this);
+            action->setToolTip (tr ("Map where the streamlines terminate, and list it in the Overlay tool"));
+            connect (action, SIGNAL(triggered()), this, SLOT (endpoints_overlay_slot()));
+            track_option_menu->addAction (action);
 
             //CONF option: MRViewDefaultTractGeomType
             //CONF default: Pseudotubes
@@ -490,18 +665,6 @@ namespace MR
 
             update_geometry_type_gui();
 
-            HBoxLayout* checkall_layout = new HBoxLayout;
-            QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
-            check_all_button->setObjectName ("batchbtn");
-            check_all_button->setToolTip (tr ("Show every tractogram by checking its box"));
-            connect (check_all_button, &QPushButton::clicked, this, [this]{ tractogram_list_model->check_all(); window().updateGL(); });
-            checkall_layout->addWidget (check_all_button, 1);
-            QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-            uncheck_all_button->setObjectName ("batchbtn");
-            uncheck_all_button->setToolTip (tr ("Hide every tractogram by unchecking its box"));
-            connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ tractogram_list_model->uncheck_all(); window().updateGL(); });
-            checkall_layout->addWidget (uncheck_all_button, 1);
-            main_box->addLayout (checkall_layout, 0);
         }
 
 
@@ -543,6 +706,11 @@ namespace MR
             Tractogram* tractogram = dynamic_cast<Tractogram*>(tractogram_list_model->items[i].get());
             if (tractogram->show && !hide_all_button->isChecked())
               tractogram->render (transform);
+          }
+          // Atlas bundles are not in the list but are drawn on the same terms.
+          for (auto& bundle : atlas_bundles) {
+            if (bundle->show && !hide_all_button->isChecked())
+              bundle->render (transform);
           }
           GL::assert_context_is_current();
         }
@@ -605,27 +773,233 @@ namespace MR
 
 
 
+        namespace {
+          // Defined further down, next to the export slots that also use it.
+          void write_filtered_tracks (const Tractogram::FilteredTracks& ft, const std::string& path);
+
+          //! A file name that stands for a tract without inheriting its punctuation.
+          std::string session_stem (const std::string& name, size_t index)
+          {
+            std::string out;
+            for (const char c : name)
+              out += (std::isalnum (static_cast<unsigned char> (c)) || c == '_' || c == '-') ? c : '_';
+            if (out.empty())
+              out = "tract";
+            return out + "_" + str (index);
+          }
+        }
+
+
+
         void Tractography::get_session (nlohmann::json& node) const
         {
-          vector<std::string> files;
+          nlohmann::json entries = nlohmann::json::array();
+          node = entries;
+          // What the session writes out this time. Anything else left in the spill
+          // directory belonged to a tract that has since been closed, and is removed
+          // below - otherwise every generated tract ever made accumulates there.
+          std::set<std::string> written;
+          const std::string spill = Window::autosave_session_dir();
+
           for (size_t i = 0; i < tractogram_list_model->items.size(); ++i) {
-            const Displayable* d = tractogram_list_model->items[i].get();
-            if (d)
-              files.push_back (d->get_filename());
+            const Tractogram* t = dynamic_cast<const Tractogram*> (tractogram_list_model->items[i].get());
+            if (!t)
+              continue;
+            nlohmann::json entry;
+            const std::string& path = t->get_filename();
+            if (Path::is_file (path)) {
+              // A tract read from disk is restored from disk; the file is the user's
+              // and nothing is copied.
+              entry["file"] = path;
+            }
+            else if (spill.size()) {
+              // A generated tract exists only in this process. Dropping it - which is
+              // what used to happen, silently - throws away the expensive half of a
+              // session: the tracking. So it is written out beside the session file.
+              try {
+                const std::string stem = session_stem (t->display_name(), i);
+                const std::string kept = Path::join (spill, stem + ".tck");
+                Tractogram::FilteredTracks ft;
+                t->get_filtered_streamlines (ft);
+                write_filtered_tracks (ft, kept);
+                entry["file"] = kept;
+                entry["generated"] = true;
+                written.insert (kept);
+
+                // The streamlines this tract's run rejected are what strictness
+                // re-derives from, so without them a restored tract is frozen at
+                // whatever it was left at. They are kept in a second file rather than
+                // merged, since which is which is the whole point.
+                const vector<MR::DWI::Tractography::Streamline<float>>& rejected = t->rejected_tracks();
+                if (rejected.size()) {
+                  const std::string dropped = Path::join (spill, stem + ".rejected.tck");
+                  Tractogram::FilteredTracks rft;
+                  rft.tracks = rejected;
+                  rft.source_name = ft.source_name;
+                  write_filtered_tracks (rft, dropped);
+                  entry["rejected"] = dropped;
+                  written.insert (dropped);
+                }
+              }
+              catch (Exception& E) {
+                E.display();
+                continue;
+              }
+            }
+            else {
+              continue;
+            }
+
+            entry["name"] = t->display_name();
+            // The refinement is provenance, not data: a handful of numbers that say
+            // what this tract was recognised as. Cheap to carry, and without it a
+            // restored tract cannot be re-derived at another strictness even with its
+            // candidates present.
+            const Tractogram::Refinement& r = t->refinement();
+            if (r.valid) {
+              nlohmann::json refine;
+              refine["bundle"] = r.bundle;
+              refine["competitive"] = r.options.competitive;
+              if (std::isfinite (r.options.keep_fraction))
+                refine["keep_fraction"] = r.options.keep_fraction;
+              if (std::isfinite (r.options.outlier_k))
+                refine["outlier_k"] = r.options.outlier_k;
+              refine["per_node_outliers"] = r.options.per_node_outliers;
+              refine["neighbours"] = r.neighbours;
+              refine["kept"] = uint64_t (r.kept);
+              refine["candidates"] = uint64_t (r.candidates);
+              entry["refine"] = refine;
+            }
+            entries.push_back (entry);
           }
-          node = files;
+
+          // Remove the spill files this session wrote that it no longer needs - a
+          // tract that has since been closed. Only its own: sweeping the directory
+          // instead would delete the *previous* session's tracts two minutes after
+          // launch, before anyone had the chance to restore them.
+          for (const std::string& f : session_spill_files) {
+            if (written.count (f))
+              continue;
+            try { File::remove (f); }
+            catch (Exception&) { }   // a spill file left behind is not worth an error
+          }
+          session_spill_files = std::move (written);
+
+          // Which sections were folded open. Small, but it is the difference between
+          // a panel that comes back as you left it and one that comes back shut.
+          node = nlohmann::json::object();
+          node["tracts"] = entries;
+          node["open_sections"] = { { "refine", refine_section->is_open() },
+                                    { "edit", edit_section->is_open() } };
         }
 
 
 
         void Tractography::set_session (const nlohmann::json& node)
         {
+          // A bare array of track files, or - written by the build in which the
+          // generator was hosted inside this panel - an object holding them under
+          // "tracts". Window lifts that build's "trackgen" back to the top level
+          // before this runs, so there is nothing to do with it here.
+          if (node.is_object()) {
+            if (node.find ("open_sections") != node.end()) {
+              const nlohmann::json& open = node["open_sections"];
+              if (open.find ("refine") != open.end())
+                refine_section->set_open (open["refine"].get<bool>());
+              if (open.find ("edit") != open.end())
+                edit_section->set_open (open["edit"].get<bool>());
+            }
+            if (node.find ("tracts") != node.end())
+              set_session (node["tracts"]);
+            return;
+          }
           if (!node.is_array())
             return;
-          vector<std::string> files;
-          for (const auto& f : node)
-            files.push_back (f.get<std::string>());
-          add_tractogram (files);
+          // One file at a time: add_tractogram() hands the whole list to add_items(),
+          // which throws on the first file it cannot read - so a single missing .tck
+          // used to discard every other tract in the session.
+          vector<std::string> skipped;
+          for (const auto& f : node) {
+            // Older sessions hold a bare path per tract; current ones hold an object,
+            // because a generated tract needs its name, its rejected streamlines and
+            // what it was recognised as carried with it.
+            const bool detailed = f.is_object();
+            if (!detailed && !f.is_string())
+              continue;
+            const std::string path = detailed
+                ? (f.find ("file") != f.end() ? f["file"].get<std::string>() : std::string())
+                : f.get<std::string>();
+            if (path.empty() || !Path::is_file (path)) {
+              skipped.push_back (path.size() ? path : std::string ("(no file)"));
+              continue;
+            }
+            vector<std::string> one (1, path);
+            try {
+              tractogram_list_model->add_items (one, *this);
+            } catch (Exception&) {
+              skipped.push_back (path);
+              continue;
+            }
+            if (!detailed || !tractogram_list_model->rowCount())
+              continue;
+            Tractogram* t = dynamic_cast<Tractogram*> (
+                tractogram_list_model->items[tractogram_list_model->rowCount()-1].get());
+            if (!t)
+              continue;
+            if (f.find ("name") != f.end())
+              t->set_filename (f["name"].get<std::string>());   // the list's label
+            // Adopted: a restored spill file now belongs to this session, so closing
+            // the tract removes it on the next save, and leaving it does not.
+            if (f.value ("generated", false))
+              session_spill_files.insert (path);
+            if (f.find ("rejected") != f.end()) {
+              const std::string dropped = f["rejected"].get<std::string>();
+              session_spill_files.insert (dropped);
+              try {
+                if (Path::is_file (dropped)) {
+                  vector<MR::DWI::Tractography::Streamline<float>> candidates;
+                  MR::DWI::Tractography::Properties props;
+                  MR::DWI::Tractography::Reader<float> reader (dropped, props);
+                  MR::DWI::Tractography::Streamline<float> tck;
+                  while (reader (tck))
+                    candidates.push_back (tck);
+                  t->set_rejected_tracks (candidates);
+                }
+              }
+              catch (Exception&) { }   // the candidates are a bonus, not the tract
+            }
+            if (f.find ("refine") != f.end()) {
+              const nlohmann::json& r = f["refine"];
+              Tractogram::Refinement& provenance = t->refinement();
+              if (r.find ("bundle") != r.end())
+                provenance.bundle = r["bundle"].get<std::string>();
+              if (r.find ("competitive") != r.end())
+                provenance.options.competitive = r["competitive"].get<bool>();
+              provenance.options.keep_fraction = r.find ("keep_fraction") != r.end()
+                                               ? r["keep_fraction"].get<float>() : NaN;
+              provenance.options.outlier_k = r.find ("outlier_k") != r.end()
+                                           ? r["outlier_k"].get<float>() : NaN;
+              if (r.find ("per_node_outliers") != r.end())
+                provenance.options.per_node_outliers = r["per_node_outliers"].get<bool>();
+              if (r.find ("neighbours") != r.end())
+                provenance.neighbours = r["neighbours"].get<vector<std::string>>();
+              if (r.find ("kept") != r.end())
+                provenance.kept = r["kept"].get<uint64_t>();
+              if (r.find ("candidates") != r.end())
+                provenance.candidates = r["candidates"].get<uint64_t>();
+              provenance.original = provenance.options;
+              // Only usable if the atlas can still supply the bundle to measure
+              // against - the settings restore either way, but re-deriving needs the
+              // reference, and saying so up front beats failing when the slider moves.
+              provenance.valid = provenance.bundle.size()
+                              && window().atlas_registration().has_bundle (provenance.bundle);
+            }
+          }
+          if (tractogram_list_model->rowCount())
+            select_last_added_tractogram();
+          if (skipped.size())
+            WARN ("session: " + str(skipped.size()) + " tract file(s) could not be restored: "
+                  + join (skipped, ", "));
         }
 
 
@@ -667,6 +1041,170 @@ namespace MR
           scalar_file_options->update_UI();
           window().updateGL();
         }
+
+
+        Tractogram* Tractography::add_atlas_bundle (
+            const vector<MR::DWI::Tractography::Streamline<float>>& tracks,
+            const MR::DWI::Tractography::Properties& properties,
+            const std::string& display_name)
+        {
+          if (tracks.empty())
+            return nullptr;
+          GL::Context::Grab context;
+          std::unique_ptr<Tractogram> tractogram (new Tractogram (*this, display_name, display_name));
+          tractogram->load_tracks_from_memory (tracks, properties, tracks.size());
+          tractogram->set_color_type (TrackColourType::Direction);
+          tractogram->show = true;
+          Tractogram* raw = tractogram.get();
+          atlas_bundles.push_back (std::move (tractogram));
+          window().updateGL();
+          return raw;
+        }
+
+
+
+        bool Tractography::has_tractogram_named (const std::string& name) const
+        {
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            const Tractogram* t = dynamic_cast<const Tractogram*> (tractogram_list_model->items[i].get());
+            if (t && Path::basename (t->get_filename()) == name)
+              return true;
+          }
+          return false;
+        }
+
+
+
+        Tractogram* Tractography::find_tractogram_named (const std::string& name)
+        {
+          // The display name, which is what the user sees and edits, rather than the
+          // source path: a tract generated in memory has no path.
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            Tractogram* t = dynamic_cast<Tractogram*> (tractogram_list_model->items[i].get());
+            if (t && t->display_name() == name)
+              return t;
+          }
+          return nullptr;
+        }
+
+
+
+        bool Tractography::select_tractogram_named (const std::string& name)
+        {
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            Tractogram* t = dynamic_cast<Tractogram*> (tractogram_list_model->items[i].get());
+            if (!t || t->display_name() != name)
+              continue;
+            const QModelIndex index = tractogram_list_model->index (int (i), 0);
+            tractogram_list_view->selectionModel()->clearSelection();
+            tractogram_list_view->selectionModel()->select (index, QItemSelectionModel::Select);
+            tractogram_list_view->setCurrentIndex (index);
+            return true;
+          }
+          return false;
+        }
+
+
+
+        void Tractography::cluster_selected ()
+        {
+          cluster_tracts_slot();
+        }
+
+
+
+        void Tractography::begin_manual_editing ()
+        {
+          // setChecked already emits toggled, which is connected to edit_enable_slot;
+          // calling it again would toggle editing straight back off.
+          edit_enable_box->setChecked (true);
+          // Editing happens in the viewer with this tool's controls, so bring it
+          // forward rather than leaving the caller's panel in front.
+          for (QWidget* w = this; w; w = w->parentWidget()) {
+            if (QDockWidget* dock = qobject_cast<QDockWidget*> (w)) {
+              dock->show();
+              dock->raise();
+              break;
+            }
+          }
+        }
+
+
+
+        void Tractography::remove_atlas_bundle (Tractogram* tractogram)
+        {
+          if (!tractogram)
+            return;
+          GL::Context::Grab context;
+          for (auto it = atlas_bundles.begin(); it != atlas_bundles.end(); ++it) {
+            if (it->get() == tractogram) {
+              atlas_bundles.erase (it);
+              window().updateGL();
+              return;
+            }
+          }
+        }
+
+
+
+        void Tractography::apply_distinct_colour (Tractogram* tractogram)
+        {
+          if (!tractogram)
+            return;
+          GL::Context::Grab context;
+          tractogram_list_model->apply_solid_colour (tractogram);
+          window().updateGL();
+        }
+
+
+
+        void Tractography::set_atlas_bundle_colour (Tractogram* tractogram, const QColor& colour)
+        {
+          if (!tractogram)
+            return;
+          GL::Context::Grab context;
+          if (colour.isValid()) {
+            tractogram->set_color_type (TrackColourType::Manual);
+            tractogram->set_colour (colour);
+          } else {
+            tractogram->set_color_type (TrackColourType::Direction);
+          }
+          window().updateGL();
+        }
+
+
+
+        bool Tractography::contains (const Tractogram* tractogram) const
+        {
+          if (!tractogram)
+            return false;
+          for (size_t i = 0; i != tractogram_list_model->items.size(); ++i) {
+            if (tractogram_list_model->items[i].get() == tractogram)
+              return true;
+          }
+          return false;
+        }
+
+
+
+        void Tractography::remove_tractogram (Tractogram* tractogram)
+        {
+          if (!tractogram)
+            return;
+          for (int row = 0; row != tractogram_list_model->rowCount(); ++row) {
+            QModelIndex index = tractogram_list_model->index (row, 0);
+            if (tractogram_list_model->get_tractogram (index) != tractogram)
+              continue;
+            GL::Context::Grab context;
+            // The scalar-file panel may be pointing at what we are about to delete.
+            scalar_file_options->set_tractogram (nullptr);
+            scalar_file_options->update_UI();
+            tractogram_list_model->remove_item (index);
+            window().updateGL();
+            return;
+          }
+        }
+
 
 
         namespace {
@@ -711,6 +1249,41 @@ namespace MR
             }
             return name;
           }
+
+          //! Streamlines for a read-only analysis, without retaining anything.
+          /*! Editing keeps a CPU copy so a selection can be tracked against it, which
+           *  is why it is opt-in - a whole-brain tractogram is hundreds of megabytes.
+           *  Statistics, profiles and clustering only need to *read* the streamlines,
+           *  so they borrow the editing cache when it happens to exist and otherwise
+           *  fill a scratch buffer that dies with the caller. */
+          const vector<MR::DWI::Tractography::Streamline<float>>& tract_streamlines (
+              Tractogram* t, Tractogram::FilteredTracks& scratch)
+          {
+            if (t->editing_enabled())
+              return t->cpu_tracks();
+            t->get_filtered_streamlines (scratch);
+            return scratch.tracks;
+          }
+
+          //! Suggested export name for a tractogram, without extension.
+          std::string suggested_export_name (const Tractogram* t)
+          {
+            // The display name, so a rename in the list carries through to the save
+            // dialog rather than the original file's name reappearing.
+            std::string name = strip_known_suffix (Path::basename (t->display_name()));
+
+            // Which algorithm produced it matters when comparing runs, and it is
+            // not otherwise visible in a .tck's name.
+            const std::string method = t->tracking_method();
+            if (method.size() && name.find (method) == std::string::npos)
+              name += "_" + method;
+
+            // Only when a threshold is actually in force: the suffix used to be
+            // unconditional, which said "thresholded" about untouched tracts.
+            if (t->get_threshold_type() != TrackThresholdType::None)
+              name += "_thresholded";
+            return name;
+          }
         }
 
 
@@ -731,8 +1304,7 @@ namespace MR
           try {
             if (selected.size() == 1) {
               // Single tractogram: plain save in any supported format.
-              const std::string suggested =
-                  strip_known_suffix (Path::basename (selected[0]->get_filename())) + "_thresholded.tck";
+              const std::string suggested = suggested_export_name (selected[0]) + ".tck";
               const std::string out_path = Dialog::File::get_save_name (this,
                   "Export tractogram", suggested, "Tractograms (*.tck *.trk *.trx)");
               if (out_path.empty())
@@ -753,8 +1325,11 @@ namespace MR
 
             if (choice.mode == Dialog::File::MultiSaveMode::SingleFile) {
               // A single combined file must be .trx (only format with groups).
+              // Named after the selection, not a generic "tractograms".
+              const std::string stem = suggested_export_name (selected[0])
+                                     + "_plus" + str (selected.size() - 1);
               std::string out_path = Dialog::File::get_save_name (this,
-                  "Export tractograms as a single .trx", "tractograms.trx", "TRX (*.trx)");
+                  "Export tractograms as a single .trx", stem + ".trx", "TRX (*.trx)");
               if (out_path.empty())
                 return;
               if (!Path::has_suffix (out_path, ".trx"))
@@ -785,7 +1360,7 @@ namespace MR
               for (Tractogram* t : selected) {
                 Tractogram::FilteredTracks ft;
                 t->get_filtered_streamlines (ft);
-                write_filtered_tracks (ft, Path::join (folder, strip_known_suffix (ft.source_name) + "_thresholded" + choice.extension));
+                write_filtered_tracks (ft, Path::join (folder, suggested_export_name (t) + choice.extension));
                 total += ft.tracks.size();
               }
               QMessageBox::information (this, "Export tractography",
@@ -853,9 +1428,47 @@ namespace MR
         }
 
 
+        //! One voxel of the main image, which is what the slab is meant to show.
+        /*! The slab crops the tracts to what lies near the slice on screen, so its
+         *  natural unit is the slice's own thickness. It used to be two voxels, and
+         *  it was computed once when the panel was first built - with a 2.5 mm
+         *  fallback if no image was open yet, which is where a 5 mm slab over 1 mm
+         *  data came from: the panel had been opened before the image, and nothing
+         *  ever recomputed it. */
+        float Tractography::default_slab_thickness () const
+        {
+          const auto image = window().image();
+          if (!image)
+            return 2.5f;
+          return (image->header().spacing(0) +
+                  image->header().spacing(1) +
+                  image->header().spacing(2)) / 3.0f;
+        }
+
+
+
+        void Tractography::main_image_changed_slot ()
+        {
+          // A slab set by hand is the user's number and stays; otherwise it follows
+          // whichever image is now on screen, including the first one to arrive.
+          if (slab_thickness_user_set)
+            return;
+          const float thickness = default_slab_thickness();
+          if (thickness == slab_thickness)
+            return;
+          slab_thickness = thickness;
+          slab_entry->blockSignals (true);
+          slab_entry->setValue (slab_thickness);
+          slab_entry->blockSignals (false);
+          window().updateGL();
+        }
+
+
+
         void Tractography::on_slab_thickness_slot()
         {
           slab_thickness = slab_entry->value();
+          slab_thickness_user_set = true;
           window().updateGL();
         }
 
@@ -905,11 +1518,19 @@ namespace MR
             for (const uint8_t f : t->selection())
               chosen += f ? 1 : 0;
           }
-          for (QPushButton* b : { select_region_button, invert_button, select_all_button,
-                                  keep_button, delete_button, split_button })
+          // Starting a selection turns editing on by itself, so those three only need
+          // a tract to work on; the three that consume a selection still need one to
+          // exist.
+          const bool any_selected = selected.size();
+          for (QPushButton* b : { select_region_button, invert_button, select_all_button })
+            b->setEnabled (any_selected);
+          for (QPushButton* b : { keep_button, delete_button, split_button })
             b->setEnabled (any_editing);
-          stats_button->setEnabled (any_editing);
-          profile_button->setEnabled (any_editing);
+          update_refine_controls();
+          // Reflect editing that an operation turned on, without re-entering the slot.
+          edit_enable_box->blockSignals (true);
+          edit_enable_box->setChecked (any_editing);
+          edit_enable_box->blockSignals (false);
           if (any_editing)
             edit_status_label->setText (QString ("%1 of %2 streamlines selected")
                 .arg (uint64_t (chosen)).arg (uint64_t (total)));
@@ -970,17 +1591,23 @@ namespace MR
           fresh->addAction (tr ("avoids"))->setData (qstr (std::string ("out:<new>")));
           if (available.size())
             menu.addSeparator();
-          std::string group;
-          for (const auto& region : available) {
-            if (region.provider != group) {
-              group = region.provider;
-              menu.addSection (qstr (group));
-            }
-            QMenu* sub = menu.addMenu (qstr (region.name));
-            QAction* through = sub->addAction (tr ("passes through"));
-            through->setData (qstr ("in:" + region.key));
-            QAction* avoids = sub->addAction (tr ("avoids"));
-            avoids->setData (qstr ("out:" + region.key));
+          // Regions painted or loaded by the user come first, inline. The atlas
+          // bundles - a hundred of them - go behind one entry, so selecting by a
+          // hand-drawn ROI stays a two-click operation instead of a scroll through
+          // the whole atlas.
+          vector<RegionRef> own, atlas;
+          for (const auto& region : available)
+            (region.name.find ('/') == std::string::npos ? own : atlas).push_back (region);
+
+          auto add_choices = [] (QMenu* sub, const RegionRef& region) {
+            sub->addAction (tr ("passes through"))->setData (qstr ("in:" + region.key));
+            sub->addAction (tr ("avoids"))->setData (qstr ("out:" + region.key));
+          };
+          build_region_menu (menu, own, add_choices);
+          if (atlas.size()) {
+            menu.addSeparator();
+            QMenu* atlas_menu = menu.addMenu (tr ("Atlas bundle (%1)").arg (atlas.size()));
+            build_region_menu (*atlas_menu, atlas, add_choices);
           }
           QAction* chosen = menu.exec (select_region_button->mapToGlobal (
               QPoint (0, select_region_button->height())));
@@ -1015,7 +1642,10 @@ namespace MR
           try {
             QApplication::setOverrideCursor (Qt::WaitCursor);
             for (Tractogram* t : selected) {
-              if (!t->editing_enabled())
+              QApplication::restoreOverrideCursor();
+              const bool ready = ensure_editing (t);
+              QApplication::setOverrideCursor (Qt::WaitCursor);
+              if (!ready)
                 continue;
               // Record the criterion and evaluate it, rather than baking the
               // result in: the region may be edited afterwards.
@@ -1162,7 +1792,7 @@ namespace MR
         void Tractography::invert_selection_slot ()
         {
           for (Tractogram* t : selected_tractograms()) {
-            if (!t->editing_enabled())
+            if (!ensure_editing (t))
               continue;
             vector<uint8_t> flags = t->selection();
             for (auto& f : flags)
@@ -1183,7 +1813,7 @@ namespace MR
         void Tractography::select_all_streamlines_slot ()
         {
           for (Tractogram* t : selected_tractograms()) {
-            if (!t->editing_enabled())
+            if (!ensure_editing (t))
               continue;
             vector<uint8_t> flags (t->num_cpu_tracks(), 1);
             try { t->set_selection (flags); }
@@ -1236,15 +1866,752 @@ namespace MR
               continue;
             }
             MR::DWI::Tractography::Properties props;
-            props["split_from"] = t->get_filename();
+            props["split_from"] = t->display_name();
             try {
+              // No spaces or brackets: this name becomes a filename on export.
               add_tractogram_from_memory (tracks, props,
-                  Path::basename (t->get_filename()) + " (selection)", tracks.size());
+                  strip_known_suffix (Path::basename (t->display_name())) + "_selection", tracks.size());
             } catch (Exception& e) {
               QMessageBox::warning (this, "Split selection", qstr (e[0]));
             }
           }
           update_edit_controls();
+        }
+
+
+
+        bool Tractography::ensure_editing (Tractogram* t)
+        {
+          // Selection genuinely needs the retained CPU copy - it is what the flags
+          // index into. Turn it on rather than refusing: the checkbox is there to
+          // release the memory again, not to be a precondition the user has to know.
+          if (t->editing_enabled())
+            return true;
+          try {
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            t->enable_editing();
+            QApplication::restoreOverrideCursor();
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Edit tractogram", qstr (e[0]));
+            return false;
+          }
+          return true;
+        }
+
+
+
+        void Tractography::split_rejected_slot ()
+        {
+          for (Tractogram* t : selected_tractograms()) {
+            const auto& rejected = t->rejected_tracks();
+            if (rejected.empty())
+              continue;
+            const std::string name = strip_known_suffix (Path::basename (t->display_name()));
+            MR::DWI::Tractography::Properties props;
+            props["split_from"] = t->display_name();
+            props["rejected_by"] = "shape distance to the atlas bundle";
+            try {
+              // A distinct solid colour: this is meant to be compared against the
+              // tract it was rejected from, which is directionally coloured.
+              add_tractogram_from_memory (rejected, props, name + "_deleted", rejected.size(), true);
+            } catch (Exception& e) {
+              QMessageBox::warning (this, "Rejected streamlines", qstr (e[0]));
+            }
+          }
+          window().updateGL();
+        }
+
+
+
+        void Tractography::combine_tracts_slot ()
+        {
+          vector<Tractogram*> targets = selected_tractograms();
+          if (targets.size() < 2) {
+            QMessageBox::information (this, "Combine tracts",
+                "Select two or more tracts in the list to combine.");
+            return;
+          }
+
+          std::string suggested = strip_known_suffix (Path::basename (targets[0]->display_name()));
+          suggested += "_and_" + str (targets.size() - 1) + "_more";
+          bool ok = false;
+          const QString name = QInputDialog::getText (this, tr ("Combine tracts"),
+              tr ("Name for the combined tract (the %1 originals are closed):").arg (targets.size()),
+              QLineEdit::Normal, qstr (suggested), &ok);
+          if (!ok || name.trimmed().isEmpty())
+            return;
+
+          MR::Timer clock;
+          vector<MR::DWI::Tractography::Streamline<float>> merged;
+          std::string sources;
+          try {
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            for (Tractogram* t : targets) {
+              Tractogram::FilteredTracks scratch;
+              const auto& tracks = tract_streamlines (t, scratch);
+              merged.insert (merged.end(), tracks.begin(), tracks.end());
+              sources += (sources.size() ? ", " : "") + Path::basename (t->display_name());
+            }
+            QApplication::restoreOverrideCursor();
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Combine tracts", qstr (e[0]));
+            return;
+          }
+
+          if (merged.empty()) {
+            QMessageBox::information (this, "Combine tracts", "Those tracts hold no streamlines.");
+            return;
+          }
+
+          try {
+            MR::DWI::Tractography::Properties props;
+            props["combined_from"] = sources;
+            props["combined_count"] = str (targets.size());
+            add_tractogram_from_memory (merged, props, name.trimmed().toStdString(), merged.size());
+            // Only now that the merge exists: closing first would lose the
+            // streamlines if creating it failed.
+            for (Tractogram* t : targets)
+              remove_tractogram (t);
+          } catch (Exception& e) {
+            QMessageBox::warning (this, "Combine tracts", qstr (e[0]));
+            return;
+          }
+
+          edit_status_label->setText (QString ("%1 streamlines from %2 tracts combined in %3 s")
+              .arg (uint64_t (merged.size())).arg (targets.size()).arg (clock.elapsed(), 0, 'f', 2));
+          update_edit_controls();
+          window().updateGL();
+        }
+
+
+
+        void Tractography::refresh_tract_controls ()
+        {
+          update_edit_controls();     // which ends by refreshing the Refine group
+        }
+
+
+
+        void Tractography::update_refine_controls ()
+        {
+          vector<Tractogram*> selected = selected_tractograms();
+          Tractogram* single = selected.size() == 1 ? selected[0] : nullptr;
+          const bool usable = single && single->refinement().valid;
+
+          refine_section->set_title (usable
+              ? tr ("Refine \"%1\"").arg (qstr (single->display_name()))
+              : tr ("Refine"));
+          for (QWidget* w : { (QWidget*) refine_strictness, (QWidget*) refine_competitive,
+                              (QWidget*) refine_prune, (QWidget*) refine_neighbours_button,
+                              (QWidget*) refine_revert_button })
+            w->setEnabled (usable);
+
+          if (!usable) {
+            refine_count_label->setText ("");
+            // Say which of the three reasons it is, rather than leaving a dead panel.
+            refine_status_label->setText (
+                selected.empty() ? tr ("Select one tract to refine it.")
+              : selected.size() > 1 ? tr ("Select a single tract: refining compares one tract "
+                                          "against one atlas bundle.")
+              : tr ("This tract was not recognised against an atlas bundle, so there is nothing "
+                    "to re-derive it from. Use \"Refine against an atlas bundle...\" on the "
+                    "right-click menu to give it one."));
+            return;
+          }
+
+          // Loading the controls must not read as the user having changed them.
+          const Tractogram::Refinement& r = single->refinement();
+          refine_loading = true;
+          if (!refine_strictness->isSliderDown()) {
+            // The tract's own value is what is applied; the slider shows the nearest
+            // landmark to it. A tract refined at 30% from the dialog therefore reads
+            // as 25 without being changed to it - nothing is re-derived until the
+            // slider is actually moved.
+            refine_strictness_percent = std::isfinite (r.options.keep_fraction)
+                ? int (std::lround (100.0f * (1.0f - r.options.keep_fraction))) : 0;
+            refine_strictness->setValue (strictness_landmark_index (refine_strictness_percent));
+          }
+          refine_competitive->setChecked (r.options.competitive);
+          refine_prune->setCurrentIndex (
+              !std::isfinite (r.options.outlier_k) ? 0
+            : r.options.outlier_k >= 3.5f ? 1
+            : r.options.outlier_k >= 2.75f ? 2 : 3);
+          refine_loading = false;
+
+          // Streamlines currently shown, out of what the run had to choose from.
+          // num_cpu_tracks() is only populated while editing is on, so the displayed
+          // count comes from the tractogram itself.
+          refine_count_label->setText (r.candidates
+              ? tr ("%1% \u00b7 %2 / %3").arg (refine_strictness_percent)
+                    .arg (uint64_t (r.kept)).arg (uint64_t (r.candidates))
+              : tr ("%1%").arg (refine_strictness_percent));
+          QString neighbours = r.neighbours.size()
+              ? tr ("%1 chosen").arg (uint64_t (r.neighbours.size()))
+              : tr ("automatic");
+          refine_status_label->setText (tr ("against atlas %1; competing bundles: %2")
+              .arg (qstr (r.bundle)).arg (neighbours));
+        }
+
+
+
+        void Tractography::strictness_moved_slot (int landmark)
+        {
+          // Loading the controls moves the slider to the nearest landmark; that must
+          // not overwrite the tract's own value with the landmark's.
+          if (refine_loading)
+            return;
+          // The slider carries an index; what gets applied is the percentage it
+          // stands for. Kept in a member so a value that is not on a landmark -
+          // one set by the Refine dialog - survives until the slider is moved.
+          refine_strictness_percent = strictness_landmarks[
+              std::min (std::max (landmark, 0), num_strictness_landmarks - 1)];
+          refine_setting_changed();
+        }
+
+
+
+        void Tractography::refine_setting_changed ()
+        {
+          if (refine_loading)
+            return;
+          // With tracking off the slider only reports on release, so this is one
+          // shot per gesture rather than one per pixel. The delay is still worth
+          // keeping: the combo box and the checkbox emit immediately, and a run of
+          // them (revert, then a prune change) should re-derive once.
+          refine_timer->start (100);
+        }
+
+
+
+        void Tractography::apply_refine_slot ()
+        {
+          vector<Tractogram*> selected = selected_tractograms();
+          if (selected.size() != 1 || !selected[0]->refinement().valid)
+            return;
+          Tractogram* t = selected[0];
+          Tractogram::Refinement& r = t->refinement();
+          r.options.competitive = refine_competitive->isChecked();
+          const int strictness = refine_strictness_percent;
+          r.options.keep_fraction = strictness > 0 ? 1.0f - float (strictness) / 100.0f : NaN;
+          // Same calibration as a run uses; see collect_refine_options in trackgen.cpp.
+          r.options.per_node_outliers = true;
+          switch (refine_prune->currentIndex()) {
+            case 1:  r.options.outlier_k = 4.0f; break;
+            case 2:  r.options.outlier_k = 3.0f; break;
+            case 3:  r.options.outlier_k = 2.5f; break;
+            default: r.options.outlier_k = NaN;  break;
+          }
+          apply_refinement (t);
+          update_refine_controls();
+        }
+
+
+
+        void Tractography::refine_revert_slot ()
+        {
+          vector<Tractogram*> selected = selected_tractograms();
+          if (selected.size() != 1 || !selected[0]->refinement().valid)
+            return;
+          Tractogram::Refinement& r = selected[0]->refinement();
+          r.options = r.original;
+          r.neighbours.clear();
+          apply_refinement (selected[0]);
+          update_refine_controls();
+        }
+
+
+
+        void Tractography::apply_refinement (Tractogram* t)
+        {
+          using namespace MR::DWI::Tractography::Recognition;
+          Tractogram::Refinement& r = t->refinement();
+          if (!r.valid)
+            return;
+
+          const vector<MR::DWI::Tractography::Streamline<float>> candidates = t->refine_candidates();
+          if (candidates.empty()) {
+            refine_status_label->setText (tr ("nothing left to re-derive from"));
+            return;
+          }
+
+          try {
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            auto& registration = window().atlas_registration();
+            const vector<MR::DWI::Tractography::Streamline<float>> reference =
+                registration.bundle (r.bundle);
+            if (reference.empty())
+              throw Exception ("atlas bundle \"" + r.bundle + "\" could not be read");
+
+            vector<Competitor> competitors;
+            if (r.options.competitive) {
+              vector<std::string> wanted = r.neighbours;
+              if (wanted.empty()) {
+                if (!AtlasTemplate::footprints_ready())
+                  AtlasTemplate::load_footprint_cache();
+                wanted = AtlasTemplate::competitors_for (r.bundle);
+              }
+              for (const std::string& other : wanted) {
+                try {
+                  const auto& neighbour = registration.bundle (other);
+                  if (neighbour.size())
+                    competitors.push_back ({ other, neighbour });
+                } catch (Exception&) { }
+              }
+            }
+
+            MR::Timer clock;
+            vector<MR::DWI::Tractography::Streamline<float>> kept, rejected;
+            RefineReport report;
+            auto population = open_population_map (r.bundle, registration);
+            refine_bundle (reference, r.match, r.options, competitors, candidates,
+                           kept, rejected, report, nullptr, population.get());
+            QApplication::restoreOverrideCursor();
+
+            if (kept.empty()) {
+              QMessageBox::information (this, "Refine",
+                  qstr ("Nothing would be kept.\n\n" + report.summary()
+                        + "\n\nRaise the strictness slider, or turn off pruning."));
+              return;
+            }
+
+            // In place, so the tract keeps its identity, colour and list position -
+            // this runs on every drag of the slider.
+            const bool was_editing = t->editing_enabled();
+            t->reload_from_memory (kept, candidates.size());
+            t->set_rejected_tracks (rejected);
+            if (was_editing)
+              t->enable_editing();
+            r.kept = kept.size();
+            r.candidates = candidates.size();
+            window().updateGL();
+            refine_status_label->setText (QString ("%1 (%2 s)")
+                .arg (qstr (report.summary())).arg (clock.elapsed(), 0, 'f', 2));
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Refine", qstr (e[0]));
+          }
+        }
+
+
+
+        void Tractography::refine_neighbours_slot ()
+        {
+          vector<Tractogram*> selected = selected_tractograms();
+          if (selected.size() != 1 || !selected[0]->refinement().valid)
+            return;
+          Tractogram::Refinement& r = selected[0]->refinement();
+
+          if (!AtlasTemplate::footprints_ready())
+            AtlasTemplate::load_footprint_cache();
+          // Wider than a run uses, so a bundle can be added by hand.
+          vector<std::string> offered = AtlasTemplate::competitors_for (r.bundle, 0.05f, 40);
+          if (offered.empty()) {
+            QMessageBox::information (this, "Neighbours",
+                "No neighbouring bundles are known for this bundle yet. It is in no atlas "
+                "category, and the territory index is built the first time a run needs it.");
+            return;
+          }
+          const vector<std::string> current = r.neighbours.size()
+              ? r.neighbours : AtlasTemplate::competitors_for (r.bundle);
+
+          QDialog dialog (this);
+          dialog.setWindowTitle (tr ("Competing bundles"));
+          VBoxLayout* layout = new VBoxLayout (&dialog);
+          layout->addWidget (new QLabel (tr (
+              "A streamline is dropped when one of these bundles fits it better than\n"
+              "\"%1\" does. Ticked by default are every other bundle of its own class,\n"
+              "then any bundle from elsewhere that runs through the same territory.").arg (qstr (r.bundle)), &dialog));
+          QListWidget* list = new QListWidget (&dialog);
+          for (const std::string& candidate : offered) {
+            QListWidgetItem* item = new QListWidgetItem (qstr (candidate), list);
+            item->setFlags (item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState (std::find (current.begin(), current.end(), candidate) != current.end()
+                                 ? Qt::Checked : Qt::Unchecked);
+          }
+          list->setMinimumHeight (240);
+          layout->addWidget (list);
+          QDialogButtonBox* buttons = new QDialogButtonBox (
+              QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+          connect (buttons, SIGNAL (accepted()), &dialog, SLOT (accept()));
+          connect (buttons, SIGNAL (rejected()), &dialog, SLOT (reject()));
+          layout->addWidget (buttons);
+          if (dialog.exec() != QDialog::Accepted)
+            return;
+
+          r.neighbours.clear();
+          for (int i = 0; i != list->count(); ++i)
+            if (list->item(i)->checkState() == Qt::Checked)
+              r.neighbours.push_back (list->item(i)->text().toStdString());
+          apply_refinement (selected[0]);
+          update_refine_controls();
+        }
+
+
+
+        void Tractography::refine_tracts_slot ()
+        {
+          using namespace MR::DWI::Tractography::Recognition;
+
+          vector<Tractogram*> targets = selected_tractograms();
+          if (targets.empty())
+            return;
+
+          auto& registration = window().atlas_registration();
+          const auto& atlas_catalogue = registration.catalogue();
+          if (atlas_catalogue.empty()) {
+            QMessageBox::information (this, "Refine against an atlas bundle",
+                "No tract atlas is available. Load an FOD image so the atlas can be aligned "
+                "to this subject, or point MRViewTractAtlasPath at a directory of bundles.");
+            return;
+          }
+
+          // A tract opened from a file carries no atlas bundle, so which bundle it is
+          // meant to be has to be asked. Same two-step picker the Track generation
+          // panel uses - a hundred bundles is too many for one flat list.
+          QDialog dialog (this);
+          dialog.setWindowTitle (tr ("Refine against an atlas bundle"));
+          VBoxLayout* layout = new VBoxLayout (&dialog);
+          layout->addWidget (new QLabel (tr (
+              "Keeps the streamlines that belong to the bundle you name, using its own\n"
+              "length range and endpoints, and drops the ones a neighbouring bundle fits\n"
+              "better. The originals are left alone; the result is listed as a new tract."),
+              &dialog));
+
+          GridLayout* grid = new GridLayout;
+          layout->addLayout (grid);
+
+          grid->addWidget (new QLabel (tr ("find")), 0, 0);
+          QLineEdit* filter = new QLineEdit (&dialog);
+          make_search_box (filter, tr ("Search every category - e.g. CST, _L"));
+          filter->setClearButtonEnabled (true);
+          grid->addWidget (filter, 0, 1);
+
+          grid->addWidget (new QLabel (tr ("category")), 1, 0);
+          QComboBox* category = new QComboBox (&dialog);
+          grid->addWidget (category, 1, 1);
+          grid->addWidget (new QLabel (tr ("bundle")), 2, 0);
+          QComboBox* bundle = new QComboBox (&dialog);
+          grid->addWidget (bundle, 2, 1);
+
+          vector<std::string> categories;
+          for (const auto& ref : atlas_catalogue) {
+            const std::string group = ref.category.size() ? ref.category : std::string ("atlas");
+            if (std::find (categories.begin(), categories.end(), group) == categories.end())
+              categories.push_back (group);
+          }
+          for (const auto& group : categories)
+            category->addItem (qstr (group));
+
+          auto fill_bundles = [&] () {
+            bundle->clear();
+            const std::string group = category->currentText().toStdString();
+            const std::string needle = filter->text().toLower().toStdString();
+            for (const auto& ref : atlas_catalogue) {
+              if ((ref.category.size() ? ref.category : std::string ("atlas")) != group)
+                continue;
+              if (needle.size()) {
+                std::string lower = ref.name;
+                std::transform (lower.begin(), lower.end(), lower.begin(),
+                                [] (unsigned char c) { return std::tolower (c); });
+                if (lower.find (needle) == std::string::npos)
+                  continue;
+              }
+              bundle->addItem (qstr (ref.name));
+            }
+          };
+          // A search that matches nothing in the shown category moves to the one that
+          // has it, so a name is enough to find a bundle without knowing its group.
+          auto follow_filter = [&] () {
+            const std::string needle = filter->text().toLower().toStdString();
+            if (needle.size()) {
+              for (const auto& ref : atlas_catalogue) {
+                std::string lower = ref.name;
+                std::transform (lower.begin(), lower.end(), lower.begin(),
+                                [] (unsigned char c) { return std::tolower (c); });
+                if (lower.find (needle) == std::string::npos)
+                  continue;
+                const int idx = category->findText (qstr (ref.category.size() ? ref.category
+                                                                              : std::string ("atlas")));
+                if (idx >= 0 && idx != category->currentIndex()) {
+                  category->blockSignals (true);
+                  category->setCurrentIndex (idx);
+                  category->blockSignals (false);
+                }
+                break;
+              }
+            }
+            fill_bundles();
+          };
+          connect (category, &QComboBox::currentTextChanged, [&] (const QString&) { fill_bundles(); });
+          connect (filter, &QLineEdit::textChanged, [&] (const QString&) { follow_filter(); });
+          fill_bundles();
+
+          QCheckBox* competitive = new QCheckBox (tr ("count a neighbouring bundle's better fit against a fibre"), &dialog);
+          competitive->setChecked (true);
+          competitive->setToolTip (tr ("For each streamline, ask which atlas bundle it is closest to rather than only\nhow close it is to this one. A neighbour that fits it better does not delete\nit: it adds to the streamline's score, in proportion to how much better, so\nstrictness drops the contested ones first.\n\nMeasured on the projection category at 15 mm, 400 genuine and 400 bent\nstreamlines refined together: at 50% strictness all 400 genuine survive and 1\nof the bent ones does. Against the whole category, no medial lemniscus passes\nas corticospinal tract and no corticospinal streamline bent through the\nthalamus survives, while the tract itself keeps 400 of 400 - three more than\nrejecting outright ever kept."));
+          layout->addWidget (competitive);
+
+          GridLayout* more = new GridLayout;
+          layout->addLayout (more);
+          more->addWidget (new QLabel (tr ("strictness")), 0, 0);
+          QSpinBox* keep = new QSpinBox (&dialog);
+          // The share to *drop*, so higher reads as stricter, as it does everywhere else.
+          keep->setRange (0, 90);
+          keep->setValue (0);
+          keep->setSuffix (tr (" %"));
+          keep->setToolTip (tr ("Drop this share of the streamlines, furthest from the bundle first.\n"
+                                "0% applies the distance threshold below instead."));
+          more->addWidget (keep, 0, 1);
+          more->addWidget (new QLabel (tr ("distance (mm)")), 1, 0);
+          AdjustButton* distance = new AdjustButton (&dialog, 0.5f);
+          distance->setValue (10.0f);
+          more->addWidget (distance, 1, 1);
+          more->addWidget (new QLabel (tr ("prune outliers")), 2, 0);
+          QComboBox* prune = new QComboBox (&dialog);
+          prune->addItem (tr ("off"));
+          prune->addItem (tr ("low"));
+          prune->addItem (tr ("medium"));
+          prune->addItem (tr ("high"));
+          more->addWidget (prune, 2, 1);
+
+          QDialogButtonBox* buttons = new QDialogButtonBox (
+              QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+          connect (buttons, SIGNAL (accepted()), &dialog, SLOT (accept()));
+          connect (buttons, SIGNAL (rejected()), &dialog, SLOT (reject()));
+          layout->addWidget (buttons);
+          if (dialog.exec() != QDialog::Accepted || !bundle->count())
+            return;
+
+          const std::string bundle_name = bundle->currentText().toStdString();
+
+          BundleMatcher::Params match;
+          match.metric = BundleMatcher::Metric::Hausdorff;
+          match.max_mdf = distance->value();
+
+          RefineOptions options;
+          options.competitive = competitive->isChecked();
+          options.length_window = true;
+          options.endpoint_gate = true;
+          if (keep->value() > 0)
+            options.keep_fraction = 1.0f - float (keep->value()) / 100.0f;
+          options.per_node_outliers = true;
+          switch (prune->currentIndex()) {
+            case 1:  options.outlier_k = 4.0f; break;
+            case 2:  options.outlier_k = 3.0f; break;
+            case 3:  options.outlier_k = 2.5f; break;
+            default: break;
+          }
+
+          try {
+            QApplication::setOverrideCursor (Qt::WaitCursor);
+            const vector<MR::DWI::Tractography::Streamline<float>> reference =
+                registration.bundle (bundle_name);
+            if (reference.empty())
+              throw Exception ("atlas bundle \"" + bundle_name + "\" could not be read");
+
+            vector<Competitor> competitors;
+            if (options.competitive) {
+              // Whatever index is already in hand; building it here would block the
+              // GUI for tens of seconds, and the Track generation panel builds it in
+              // the background anyway.
+              if (!AtlasTemplate::footprints_ready())
+                AtlasTemplate::load_footprint_cache();
+              for (const std::string& other : AtlasTemplate::competitors_for (bundle_name)) {
+                try {
+                  const auto& neighbour = registration.bundle (other);
+                  if (neighbour.size())
+                    competitors.push_back ({ other, neighbour });
+                } catch (Exception&) { }
+              }
+              if (competitors.empty())
+                options.competitive = false;
+            }
+
+            auto population = open_population_map (bundle_name, registration);
+
+            for (Tractogram* t : targets) {
+              Tractogram::FilteredTracks scratch;
+              const auto& tracks = tract_streamlines (t, scratch);
+              if (tracks.empty())
+                continue;
+              vector<MR::DWI::Tractography::Streamline<float>> kept, rejected;
+              RefineReport report;
+              MR::Timer clock;
+              refine_bundle (reference, match, options, competitors, tracks, kept, rejected, report,
+                             nullptr, population.get());
+              QApplication::restoreOverrideCursor();
+
+              if (kept.empty()) {
+                QMessageBox::information (this, "Refine against an atlas bundle",
+                    qstr ("Nothing in \"" + t->display_name() + "\" matched " + bundle_name
+                          + ".\n\n" + report.summary()
+                          + "\n\nRaise the distance, or lower \"keep the closest\"."));
+                continue;
+              }
+
+              MR::DWI::Tractography::Properties props;
+              props["refined_from"] = t->display_name();
+              props["refine_reference"] = bundle_name;
+              props["refine_distance"] = str (report.applied_distance);
+              if (options.competitive) {
+                std::string names;
+                for (const auto& competitor : competitors)
+                  names += (names.size() ? "," : "") + competitor.name;
+                props["refine_competitors"] = names;
+              }
+              const std::string name = strip_known_suffix (Path::basename (t->display_name()))
+                                     + "_" + bundle_name;
+              if (Tractogram* added = add_tractogram_from_memory (kept, props, name, tracks.size())) {
+                added->set_rejected_tracks (rejected);
+                // So the new tract can be re-derived from the Refine group afterwards,
+                // exactly like one that came out of a run.
+                Tractogram::Refinement& provenance = added->refinement();
+                provenance.bundle = bundle_name;
+                provenance.match = match;
+                provenance.options = options;
+                provenance.original = options;
+                provenance.kept = kept.size();
+                provenance.candidates = tracks.size();
+                provenance.valid = true;
+              }
+              QMessageBox::information (this, "Refine against an atlas bundle",
+                  qstr (report.summary() + "\nlisted as \"" + name + "\", in "
+                        + str (clock.elapsed(), 3) + " s"));
+              QApplication::setOverrideCursor (Qt::WaitCursor);
+            }
+            QApplication::restoreOverrideCursor();
+          } catch (Exception& e) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning (this, "Refine against an atlas bundle", qstr (e[0]));
+          }
+        }
+
+
+
+        void Tractography::cluster_tracts_slot ()
+        {
+          using namespace MR::DWI::Tractography::Recognition;
+
+          vector<Tractogram*> targets = selected_tractograms();
+          if (targets.empty())
+            return;
+
+          // Number of clusters and which fit, in one dialog: the method changes what
+          // the count means enough that asking for them separately would be awkward.
+          QDialog dialog (this);
+          dialog.setWindowTitle (tr ("Cluster tracts"));
+          VBoxLayout* layout = new VBoxLayout (&dialog);
+          QLabel* blurb = new QLabel (tr (
+              "Streamlines are grouped by their endpoints, midpoint and length\n"
+              "(the features DSI Studio clusters on), all in millimetres.\n\n"
+              "Asking for more clusters than you expect bundles gives cleaner\n"
+              "groups, which you can then combine by eye: on seven neighbouring\n"
+              "atlas bundles, 7 clusters put 89% of streamlines with the right\n"
+              "bundle and 14 clusters 96%."), &dialog);
+          layout->addWidget (blurb);
+
+          GridLayout* grid = new GridLayout;
+          layout->addLayout (grid);
+          grid->addWidget (new QLabel (tr ("clusters")), 0, 0);
+          QSpinBox* count_box = new QSpinBox (&dialog);
+          count_box->setRange (2, 200);
+          count_box->setValue (8);
+          count_box->setToolTip (tr ("How many groups to split into; fewer are made if the data cannot support that many"));
+          grid->addWidget (count_box, 0, 1);
+          grid->addWidget (new QLabel (tr ("method")), 1, 0);
+          QComboBox* method_box = new QComboBox (&dialog);
+          method_box->addItem (tr ("expectation-maximisation"));
+          method_box->addItem (tr ("k-means"));
+          method_box->addItem (tr ("hierarchical (every pair)"));
+          method_box->setToolTip (tr ("EM fits each cluster its own full covariance, which suits the\n"
+                                      "elongated, unequally sized clouds that bundles form, and measured\n"
+                                      "best here: on seven adjacent atlas bundles at 7 clusters, EM 90%,\n"
+                                      "k-means 85%, hierarchical 83%.\n\n"
+                                      "k-means treats every cluster as equally spread, and is what seeds\n"
+                                      "EM. Hierarchical compares every pair of streamlines over their\n"
+                                      "whole length instead of comparing each to a cluster centre; it\n"
+                                      "holds an N x N matrix, so it is capped at 12000 streamlines."));
+          grid->addWidget (method_box, 1, 1);
+
+          QDialogButtonBox* buttons = new QDialogButtonBox (
+              QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+          connect (buttons, SIGNAL (accepted()), &dialog, SLOT (accept()));
+          connect (buttons, SIGNAL (rejected()), &dialog, SLOT (reject()));
+          layout->addWidget (buttons);
+          if (dialog.exec() != QDialog::Accepted)
+            return;
+
+          const size_t num_clusters = size_t (count_box->value());
+          const ClusterMethod method = method_box->currentIndex() == 2 ? ClusterMethod::Hierarchical
+                                     : method_box->currentIndex() == 1 ? ClusterMethod::KMeans
+                                     : ClusterMethod::EM;
+          const std::string method_name = method == ClusterMethod::Hierarchical ? "hierarchical"
+                                        : method == ClusterMethod::KMeans ? "k-means" : "EM";
+
+          for (Tractogram* t : targets) {
+            try {
+              Tractogram::FilteredTracks scratch;
+              const auto& tracks = tract_streamlines (t, scratch);
+              if (tracks.size() < 2) {
+                QMessageBox::information (this, "Cluster tracts", "Too few streamlines to cluster.");
+                continue;
+              }
+
+              MR::Timer clock;
+              QApplication::setOverrideCursor (Qt::WaitCursor);
+              ClusterOptions options;
+              options.method = method;
+              const ClusterResult clustered = cluster_streamlines (tracks, num_clusters, options);
+              vector<vector<MR::DWI::Tractography::Streamline<float>>> clusters (clustered.num_clusters);
+              for (size_t i = 0; i != tracks.size(); ++i) {
+                if (clustered.assignment[i] != ClusterResult::invalid)
+                  clusters[clustered.assignment[i]].push_back (tracks[i]);
+              }
+              QApplication::restoreOverrideCursor();
+
+              // Largest first, so cluster1 is the dominant group rather than
+              // whichever streamline happened to come first in the file.
+              vector<size_t> order (clusters.size());
+              for (size_t i = 0; i != order.size(); ++i) order[i] = i;
+              std::sort (order.begin(), order.end(), [&clusters] (size_t a, size_t b) {
+                return clusters[a].size() > clusters[b].size();
+              });
+
+              const std::string name = strip_known_suffix (Path::basename (t->display_name()));
+              size_t made = 0;
+              for (size_t k : order) {
+                if (clusters[k].empty())
+                  continue;         // k-means can leave a cluster with nothing in it
+                MR::DWI::Tractography::Properties props;
+                props["split_from"] = t->display_name();
+                props["cluster_method"] = method_name;
+                props["cluster_count"] = str (num_clusters);
+                add_tractogram_from_memory (clusters[k], props,
+                    name + "_cluster" + str (++made), clusters[k].size());
+              }
+
+              std::string message = str (made) + " clusters from " + str (tracks.size())
+                                  + " streamlines (" + method_name + ", "
+                                  + str (clustered.iterations) + " iterations, "
+                                  + str (clock.elapsed(), 3) + " s)\n"
+                                  + "mean distance to cluster centre: "
+                                  + str (clustered.mean_distance, 3) + " mm";
+              if (made < num_clusters)
+                message += "\nFewer than the " + str (num_clusters)
+                         + " asked for: the features do not separate any further.";
+              if (!clustered.converged)
+                message += "\nStopped at the iteration limit rather than settling; "
+                           "the grouping may shift if you run it again.";
+              QMessageBox::information (this, "Cluster tracts", qstr (message));
+            } catch (Exception& e) {
+              QApplication::restoreOverrideCursor();
+              QMessageBox::warning (this, "Cluster tracts", qstr (e[0]));
+            }
+          }
+          update_edit_controls();
+          window().updateGL();
         }
 
 
@@ -1260,13 +2627,17 @@ namespace MR
           }
 
           std::string text, csv = BundleStats::csv_header() + "\n";
+          // Named after the tract when there is only one, as in every other save.
+          const auto stats_selection = selected_tractograms();
+          const std::string stats_filename = stats_selection.size() == 1
+              ? strip_known_suffix (Path::basename (stats_selection[0]->display_name())) + "_stats.csv"
+              : std::string ("bundle_stats.csv");
+          MR::Timer clock;
           QApplication::setOverrideCursor (Qt::WaitCursor);
           for (Tractogram* t : selected_tractograms()) {
-            if (!t->editing_enabled())
-              continue;
-            const std::string name = Path::basename (t->get_filename());
-            const BundleStats stats = compute_bundle_stats (t->cpu_tracks(), grid);
-            if (text.size()) text += "\n\n";
+            const std::string name = Path::basename (t->display_name());
+            Tractogram::FilteredTracks scratch;
+            const BundleStats stats = compute_bundle_stats (tract_streamlines (t, scratch), grid);
             text += stats.as_text (name);
             csv += stats.as_csv_row (name) + "\n";
           }
@@ -1274,28 +2645,48 @@ namespace MR
 
           if (text.empty()) {
             QMessageBox::information (this, "Bundle statistics",
-                "Enable editing on a tractogram first.");
+                "Select one or more tractograms in the list first.");
             return;
           }
-          if (!grid)
-            text += "\n\n(volume requires a main image to be loaded)";
+          const double elapsed = clock.elapsed();
 
-          QMessageBox box (this);
-          box.setWindowTitle ("Bundle statistics");
-          box.setText (qstr (text));
-          box.setDetailedText (qstr (csv));
-          QPushButton* save = box.addButton (tr ("Save CSV..."), QMessageBox::ActionRole);
-          box.addButton (QMessageBox::Close);
-          box.exec();
-          if (box.clickedButton() == save) {
-            const std::string path = Dialog::File::get_save_name (this, "Save statistics", "bundle_stats.csv");
-            if (path.size()) {
-              try {
-                File::OFStream out (path);
-                out << csv;
-              } catch (Exception& e) { e.display(); }
-            }
-          }
+          // Its own dialog rather than a message box, in a fixed-pitch font: the
+          // columns are the readable part and a proportional font throws them away.
+          QDialog dialog (this);
+          dialog.setWindowTitle (tr ("Bundle statistics"));
+          VBoxLayout* layout = new VBoxLayout (&dialog);
+
+          QString summary = tr ("%1 tract(s), computed in %2 s")
+              .arg (selected_tractograms().size()).arg (elapsed, 0, 'f', 2);
+          if (!grid)
+            summary += tr ("   -   volume needs a main image loaded");
+          layout->addWidget (new QLabel (summary, &dialog));
+
+          QPlainTextEdit* view = new QPlainTextEdit (qstr (text), &dialog);
+          view->setReadOnly (true);
+          view->setLineWrapMode (QPlainTextEdit::NoWrap);
+          view->setFont (QFontDatabase::systemFont (QFontDatabase::FixedFont));
+          view->setMinimumSize (460, 320);
+          layout->addWidget (view, 1);
+
+          QDialogButtonBox* buttons = new QDialogButtonBox (QDialogButtonBox::Close, Qt::Horizontal, &dialog);
+          QPushButton* copy = buttons->addButton (tr ("Copy"), QDialogButtonBox::ActionRole);
+          QPushButton* save = buttons->addButton (tr ("Save CSV..."), QDialogButtonBox::ActionRole);
+          connect (buttons, SIGNAL (rejected()), &dialog, SLOT (reject()));
+          connect (copy, &QPushButton::clicked, this, [text] () {
+            QApplication::clipboard()->setText (qstr (text));
+          });
+          connect (save, &QPushButton::clicked, this, [this, csv, stats_filename] () {
+            const std::string path = Dialog::File::get_save_name (this, "Save statistics", stats_filename);
+            if (path.empty())
+              return;
+            try {
+              File::OFStream out (path);
+              out << csv;
+            } catch (Exception& e) { e.display(); }
+          });
+          layout->addWidget (buttons);
+          dialog.exec();
         }
 
 
@@ -1303,14 +2694,15 @@ namespace MR
         void Tractography::profile_slot ()
         {
           auto selected = selected_tractograms();
-          bool any = false;
-          for (Tractogram* t : selected)
-            if (t->editing_enabled()) any = true;
-          if (!any) {
+          if (selected.empty()) {
             QMessageBox::information (this, "Along-tract profile",
-                "Enable editing on a tractogram first.");
+                "Select one or more tractograms in the list first.");
             return;
           }
+
+          const std::string profile_filename = selected.size() == 1
+              ? strip_known_suffix (Path::basename (selected[0]->display_name())) + "_profile.csv"
+              : std::string ("profile.csv");
 
           const std::string image_path = Dialog::File::get_image (this,
               "Select the image to sample along the bundle");
@@ -1323,16 +2715,16 @@ namespace MR
             std::string csv;
             QApplication::setOverrideCursor (Qt::WaitCursor);
             for (Tractogram* t : selected) {
-              if (!t->editing_enabled())
-                continue;
-              const auto profile = compute_along_tract_profile (t->cpu_tracks(), scalar, 100, scalar_name);
-              csv += "# " + Path::basename (t->get_filename()) + " sampled from " + scalar_name + "\n";
+              Tractogram::FilteredTracks scratch;
+              const auto profile = compute_along_tract_profile (
+                  tract_streamlines (t, scratch), scalar, 100, scalar_name);
+              csv += "# " + Path::basename (t->display_name()) + " sampled from " + scalar_name + "\n";
               csv += profile.as_csv();
             }
             QApplication::restoreOverrideCursor();
 
             const std::string path = Dialog::File::get_save_name (this,
-                "Save along-tract profile", "profile.csv");
+                "Save along-tract profile", profile_filename);
             if (path.size()) {
               File::OFStream out (path);
               out << csv;
@@ -1352,9 +2744,178 @@ namespace MR
           if (index.isValid()) {
             QPoint globalPos = tractogram_list_view->mapToGlobal (pos);
             tractogram_list_view->selectionModel()->select (index, QItemSelectionModel::Select);
+            // Only auto-tracked tracts have a rejected set to split off.
+            size_t rejected = 0;
+            for (Tractogram* t : selected_tractograms())
+              rejected += t->rejected_tracks().size();
+            rejected_action->setEnabled (rejected);
+            // Combining one tract with itself is a no-op, so it needs two.
+            combine_action->setEnabled (selected_tractograms().size() > 1);
+            rejected_action->setText (rejected
+                ? tr ("Split the %1 streamlines &rejected by the distance metric").arg (uint64_t (rejected))
+                : tr ("Split streamlines &rejected by the distance metric"));
             track_option_menu->exec (globalPos);
           }
         }
+
+
+        void Tractography::endpoints_overlay_slot ()
+        {
+          // The map needs a grid, and the image in the view pane is the one the
+          // overlay will be drawn against.
+          if (!window().image()) {
+            QMessageBox::information (this, "Track endpoints",
+                "Load an image first: the endpoint map is built on its voxel grid.");
+            return;
+          }
+
+          QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
+          if (indices.empty())
+            return;
+
+          if (!endpoint_dir) {
+            endpoint_dir.reset (new QTemporaryDir);
+            if (!endpoint_dir->isValid()) {
+              endpoint_dir.reset();
+              QMessageBox::warning (this, "Track endpoints",
+                  "Could not create a temporary directory for the endpoint map.");
+              return;
+            }
+          }
+
+          MR::Header H (window().image()->header());
+          H.ndim() = 3;
+          // Counts, not a mask: where a bundle terminates is a distribution, and a
+          // mask would flatten a dense cortical projection into the same value as a
+          // single stray streamline.
+          H.datatype() = MR::DataType::UInt16LE;
+          H.reset_intensity_scaling();
+          H.keyval().clear();
+
+          MR::Timer clock;
+          vector<std::string> written;
+          std::string report;
+          for (int i = 0; i != indices.size(); ++i) {
+            Tractogram* tractogram = tractogram_list_model->get_tractogram (indices[i]);
+            if (!tractogram)
+              continue;
+            const std::string name = Path::basename (tractogram->display_name());
+            try {
+              Tractogram::FilteredTracks filtered;
+              tractogram->get_filtered_streamlines (filtered);
+              if (filtered.tracks.empty()) {
+                QMessageBox::information (this, "Track endpoints",
+                    qstr ("\"" + name + "\" has no visible streamlines to map."));
+                continue;
+              }
+
+              // A tract's name is free-form, and MRtrix reads "[...]" in a filename
+              // as a number-sequence specifier ("[atlas] OR_L" failed with "can't
+              // parse integer sequence specifier"). Keep only characters that mean
+              // nothing to the image-name parser or the shell.
+              std::string safe = name;
+              for (char& c : safe) {
+                if (!(std::isalnum (static_cast<unsigned char> (c)) || c == '-' || c == '_' || c == '.'))
+                  c = '_';
+              }
+              // Two runs of the same bundle carry the same tract name, so the path
+              // has to be made unique - otherwise the second map would be written
+              // over the file the first overlay is still reading.
+              std::string path = endpoint_dir->filePath (
+                  qstr (safe + "_endpoints.mif")).toStdString();
+              for (size_t n = 2; Path::exists (path); ++n)
+                path = endpoint_dir->filePath (
+                    qstr (safe + "_endpoints_" + str(n) + ".mif")).toStdString();
+              auto out = MR::Image<uint16_t>::create (path, H);
+              const MR::Transform T (H);
+
+              // Each endpoint is spread over a small ball rather than a single voxel.
+              // A bare one-voxel-per-endpoint map is technically correct and
+              // practically invisible: a few hundred streamlines put at most a few
+              // hundred lit voxels in the whole volume, and a 2D slice through it
+              // shows a handful of isolated dots or, more often, nothing at all.
+              const float radius_mm = 2.0f;
+              const int span[3] = {
+                int (std::ceil (radius_mm / H.spacing(0))),
+                int (std::ceil (radius_mm / H.spacing(1))),
+                int (std::ceil (radius_mm / H.spacing(2)))
+              };
+
+              size_t outside = 0;
+              auto mark = [&] (const Eigen::Vector3f& p) {
+                const Eigen::Vector3d v = T.scanner2voxel * p.cast<double>();
+                const ssize_t cx = std::lround (v[0]), cy = std::lround (v[1]), cz = std::lround (v[2]);
+                if (cx < 0 || cy < 0 || cz < 0 ||
+                    cx >= out.size(0) || cy >= out.size(1) || cz >= out.size(2)) {
+                  ++outside;
+                  return;
+                }
+                for (ssize_t z = cz - span[2]; z <= cz + span[2]; ++z) {
+                  if (z < 0 || z >= out.size(2)) continue;
+                  for (ssize_t y = cy - span[1]; y <= cy + span[1]; ++y) {
+                    if (y < 0 || y >= out.size(1)) continue;
+                    for (ssize_t x = cx - span[0]; x <= cx + span[0]; ++x) {
+                      if (x < 0 || x >= out.size(0)) continue;
+                      // Test in millimetres, so the ball stays a ball on an
+                      // anisotropic grid.
+                      const Eigen::Vector3d centre = T.voxel2scanner * Eigen::Vector3d (x, y, z);
+                      if ((centre - p.cast<double>()).norm() > radius_mm)
+                        continue;
+                      out.index(0) = x; out.index(1) = y; out.index(2) = z;
+                      if (out.value() < std::numeric_limits<uint16_t>::max())
+                        out.value() = out.value() + 1;
+                    }
+                  }
+                }
+              };
+              for (const auto& tck : filtered.tracks) {
+                if (tck.empty())
+                  continue;
+                mark (tck.front());
+                mark (tck.back());
+              }
+              if (outside == 2 * filtered.tracks.size()) {
+                QMessageBox::warning (this, "Track endpoints",
+                    qstr ("\"" + name + "\" lies entirely outside the current image; "
+                          "are they in the same space?"));
+                continue;
+              }
+              if (outside)
+                WARN (str(outside) + " endpoints of \"" + name + "\" fall outside the image");
+
+              // Say what actually landed in the map, so an empty or misplaced one is
+              // obvious rather than looking like a display problem.
+              size_t lit = 0, peak = 0;
+              for (auto l = MR::Loop (0, 3) (out); l; ++l) {
+                const uint16_t v = out.value();
+                if (v) { ++lit; peak = std::max<size_t> (peak, v); }
+              }
+              report += (report.size() ? "\n" : "") + name + ": "
+                      + str (2 * filtered.tracks.size() - outside) + " endpoints over "
+                      + str (lit) + " voxels, peak " + str (peak);
+              if (!lit) {
+                QMessageBox::warning (this, "Track endpoints",
+                    qstr ("\"" + name + "\" produced an empty map."));
+                continue;
+              }
+              written.push_back (path);
+            } catch (Exception& e) {
+              e.display();
+            }
+          }
+
+          if (written.empty())
+            return;
+          if (Overlay* overlay = get_tool<Overlay>()) {
+            overlay->add_overlays (written);
+            QMessageBox::information (this, "Track endpoints",
+                qstr ("Listed in the Overlay tool, as a count of streamline ends per "
+                      "voxel within 2 mm (" + str (clock.elapsed(), 2) + " s):\n\n" + report));
+          } else {
+            QMessageBox::warning (this, "Track endpoints", "Could not open the Overlay tool.");
+          }
+        }
+
 
 
         void Tractography::colour_track_by_direction_slot()
@@ -1399,23 +2960,79 @@ namespace MR
         void Tractography::randomise_track_colour_slot()
         {
           QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
+          vector<Tractogram*> chosen;
           for (int i = 0; i < indices.size(); ++i) {
-            Tractogram* tractogram = tractogram_list_model->get_tractogram (indices[i]);
-            float colour[3];
-            Math::RNG::Uniform<float> rng;
-            do {
-              colour[0] = rng();
-              colour[1] = rng();
-              colour[2] = rng();
-            } while (colour[0] < 0.5 && colour[1] < 0.5 && colour[2] < 0.5);
+            if (Tractogram* t = tractogram_list_model->get_tractogram (indices[i]))
+              chosen.push_back (t);
+          }
+          if (chosen.empty())
+            return;
+
+          // Colours already in use, so a "random" colour cannot land on one of them -
+          // which is the whole point of randomising when several solid-coloured tracts
+          // are shown together. Atlas bundles count: they are drawn in the same view
+          // even though they are not listed here.
+          vector<std::array<float,3>> in_use;
+          auto add_in_use = [&] (const Tractogram* t) {
+            if (!t || t->get_color_type() != TrackColourType::Manual)
+              return;
+            if (std::find (chosen.begin(), chosen.end(), t) != chosen.end())
+              return;
+            in_use.push_back ({ { t->colour[0] / 255.0f, t->colour[1] / 255.0f, t->colour[2] / 255.0f } });
+          };
+          for (int i = 0; i < tractogram_list_model->rowCount(); ++i)
+            add_in_use (dynamic_cast<Tractogram*> (tractogram_list_model->items[i].get()));
+          for (const auto& bundle : atlas_bundles)
+            add_in_use (bundle.get());
+
+          // Weighted by luma, because equal RGB steps are not equally visible: two
+          // blues differing by 0.2 look far closer than two greens do.
+          auto separation = [] (const std::array<float,3>& a, const std::array<float,3>& b) {
+            const float dr = a[0]-b[0], dg = a[1]-b[1], db = a[2]-b[2];
+            return std::sqrt (0.3f*dr*dr + 0.59f*dg*dg + 0.11f*db*db);
+          };
+
+          Math::RNG::Uniform<float> rng;
+          for (Tractogram* tractogram : chosen) {
+            std::array<float,3> best { { 0.0f, 0.0f, 0.0f } };
+            float best_separation = -1.0f;
+            // Candidates from the same golden-angle palette that names apart the
+            // auto-generated tracts, plus random ones so repeated presses still move.
+            for (size_t attempt = 0; attempt != 64; ++attempt) {
+              std::array<float,3> candidate;
+              if (attempt < 32) {
+                const auto c = distinct_colour (size_t (rng() * 64.0f) + attempt);
+                candidate = { { c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f } };
+              } else {
+                candidate = { { rng(), rng(), rng() } };
+              }
+              // Keep the old rule: nothing so dark it reads as black on black.
+              if (candidate[0] < 0.5f && candidate[1] < 0.5f && candidate[2] < 0.5f)
+                continue;
+              float nearest = std::numeric_limits<float>::max();
+              for (const auto& used : in_use)
+                nearest = std::min (nearest, separation (candidate, used));
+              if (in_use.empty())
+                nearest = 1.0f;         // nothing to avoid; the first pick will do
+              if (nearest > best_separation) {
+                best_separation = nearest;
+                best = candidate;
+              }
+              if (in_use.empty())
+                break;
+            }
+
             tractogram->set_color_type (TrackColourType::Manual);
-            QColor c (colour[0]*255.0f, colour[1]*255.0f, colour[2]*255.0f);
+            const QColor c (best[0]*255.0f, best[1]*255.0f, best[2]*255.0f);
             tractogram->set_colour (c);
             if (tractogram->get_threshold_type() == TrackThresholdType::UseColourFile)
               tractogram->set_threshold_type (TrackThresholdType::None);
-            if (!i)
+            // Each newly chosen colour is itself something the next one must avoid.
+            in_use.push_back (best);
+            if (tractogram == chosen.front())
               colour_button->setColor (c);
           }
+
           colour_combobox->blockSignals (true);
           colour_combobox->setCurrentIndex (2);
           colour_combobox->clearError();

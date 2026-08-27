@@ -51,6 +51,7 @@ namespace MR
       }
 #ifndef MRTRIX_WASM
       class UpdateCheck;
+      class AtlasRegistration;
 #endif
 
 
@@ -76,6 +77,7 @@ namespace MR
               void initializeGL () override;
               void paintGL () override;
               void mousePressEvent (QMouseEvent* event) override;
+              void mouseDoubleClickEvent (QMouseEvent* event) override;
               void mouseMoveEvent (QMouseEvent* event) override;
               void mouseReleaseEvent (QMouseEvent* event) override;
               void wheelEvent (QWheelEvent* event) override;
@@ -94,6 +96,18 @@ namespace MR
           bool save_session (const std::string& path);
           bool load_session (const std::string& path);
           static std::string autosave_session_path ();
+          //! Where the session keeps what only exists in memory.
+          /*! A generated tract has no file to restore from, so the session writes one
+           *  here rather than dropping it. \a create makes the directory if it is
+           *  missing; pass false to ask only where it would be. */
+          static std::string autosave_session_dir (bool create = true);
+
+          //! Hide every open tool panel, or put back the ones that were hidden.
+          /*! Double-clicking the image is the quickest way to get the panels out of
+           *  the way to look at what they are acting on, and back again. */
+          void toggle_tool_panels ();
+          //! Panels the last double-click hid, to be put back by the next one.
+          QList<QPointer<QDockWidget>> hidden_tool_docks;
 
           const QPoint& mouse_position () const { return mouse_position_; }
           const QPoint& mouse_displacement () const { return mouse_displacement_; }
@@ -109,6 +123,16 @@ namespace MR
           QActionGroup* tools () const {
             return tool_group;
           }
+
+          //! Background alignment of the built-in tract atlas; never null.
+          /*! Created on first use: tools that watch it (View, Track generation)
+           *  can be constructed before any image is loaded. */
+          AtlasRegistration& atlas_registration ();
+          //! Align the atlas to the current image, if it is one we can register to.
+          /*! Called automatically when an image is loaded and none is registered
+           *  yet; \a force re-runs it for the current image regardless, which is
+           *  what the image menu's "Align tract atlas" entry does. */
+          void request_atlas_registration (bool force = false);
 
           int slice () const {
             if (!image())
@@ -132,6 +156,9 @@ namespace MR
           void set_plane (int p) { anatomical_plane = p; emit planeChanged(); }
           void set_orientation (const Eigen::Quaternionf& V) { orient = V; orient.normalize(); emit orientationChanged(); }
           void set_scaling (float min, float max) { if (!image()) return; image()->set_windowing (min, max); }
+          //! Grey the volume-pane toggle unless the current mode has a spare quadrant.
+          void refresh_volume_pane_action ();
+
           void set_snap_to_image (bool onoff) { snap_to_image_axes_and_voxel = onoff; snap_to_image_action->setChecked(onoff);  emit focusChanged(); }
 
           void set_scaling_all (float min, float max) {
@@ -156,6 +183,28 @@ namespace MR
           void captureGL (std::string filename) {
             QImage image (glarea->grabFramebuffer());
             image.save (qstr (filename));
+          }
+
+          //! Screenshot of the whole window - panels, toolbar and image together.
+          /*! captureGL() takes the image area alone, which is what a figure wants and
+           *  exactly what a demonstration does not: the answer to "where is that
+           *  control" is not in the picture. This grabs the window through Qt, so
+           *  nothing outside the application is ever captured - no desktop, no other
+           *  windows - and then paints the live framebuffer over the image area,
+           *  which a widget grab renders as a blank rectangle. */
+          void captureWindow (std::string filename) {
+            const QImage framebuffer (glarea->grabFramebuffer());
+            QImage shot (grab().toImage());
+            {
+              // Logical coordinates on both sides: the grab carries the display's
+              // device-pixel ratio, so QPainter is already scaling by it. Doubling
+              // that by hand paints the framebuffer at twice the size, which lands
+              // one quarter of the image across the whole panel.
+              QPainter painter (&shot);
+              const QPoint at = glarea->mapTo (this, QPoint (0, 0));
+              painter.drawImage (QRect (at, glarea->size()), framebuffer, framebuffer.rect());
+            }
+            shot.save (qstr (filename));
           }
 
           GL::Area* glwidget () const { return glarea; }
@@ -195,6 +244,7 @@ namespace MR
           void drawGL ();
 
         private slots:
+          void restore_autosave_slot ();
           void new_window_slot ();
           void image_open_slot ();
           void image_import_DICOM_slot ();
@@ -212,6 +262,7 @@ namespace MR
           void full_screen_slot ();
           void toggle_annotations_slot ();
           void snap_to_image_slot ();
+          void volume_pane_slot ();
           void wrap_volumes_slot ();
 
           void sync_slot();
@@ -237,6 +288,8 @@ namespace MR
           void OpenGL_slot ();
           void about_slot ();
           void aboutQt_slot ();
+          void shortcuts_slot ();
+          void align_atlas_slot ();
 #ifndef MRTRIX_WASM
           void check_for_updates_slot ();
           void auto_update_slot (bool);
@@ -265,6 +318,13 @@ namespace MR
           std::unique_ptr<UpdateCheck> update_check;
           QAction* auto_update_action;
 #endif
+          QAction* align_atlas_action;
+#ifndef MRTRIX_WASM
+#endif
+          //! Aligns the built-in tract atlas to the current image, in the background.
+          /*! Owned here rather than by a tool so that every tool shares one
+           *  registration, and so it survives tools being opened and closed. */
+          std::unique_ptr<AtlasRegistration> atlas_registration_;
           GL::Lighting* lighting_;
           GL::Font font;
 
@@ -301,6 +361,7 @@ namespace MR
                   *invert_scale_action,
                   *extra_controls_action,
                   *snap_to_image_action,
+                  *volume_pane_action,
                   *image_hide_action,
                   *next_image_action,
                   *prev_image_action,

@@ -231,13 +231,22 @@ namespace MR {
           ++current_axis;
         }
 
+        // Axis 0 runs along a row (Columns, 0028,0011) and axis 1 down a column
+        // (Rows, 0028,0010), which is what dim[0] and dim[1] already hold. The
+        // spacings have to follow the same convention: PixelSpacing (0028,0030) is
+        // "adjacent row spacing / adjacent column spacing" (PS3.3 C.7.6.3.1.4), so
+        // its first value is the distance between rows - the axis-1 spacing - and
+        // its second is the distance between columns, i.e. axis 0. Taking them in
+        // tag order, as this did, transposes the in-plane voxel size; it is
+        // invisible for the square pixels almost every acquisition has, and doubles
+        // or halves an axis for the ones that do not.
         H.stride(0) = ++current_axis;
         H.size(0) = frame.dim[0];
-        H.spacing(0) = frame.pixel_size[0];
+        H.spacing(0) = frame.pixel_size[1];
 
         H.stride(1) = ++current_axis;
         H.size(1) = frame.dim[1];
-        H.spacing(1) = frame.pixel_size[1];
+        H.spacing(1) = frame.pixel_size[0];
 
         H.stride(2) = ++current_axis;
         H.size(2) = dim[1];

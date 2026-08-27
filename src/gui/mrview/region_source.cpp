@@ -18,6 +18,11 @@
 
 #include "gui/mrview/region_source.h"
 
+#include <QIcon>
+#include <QPixmap>
+
+#include "gui/mrview/qthelpers.h"
+
 #include "gui/mrview/window.h"
 #include "gui/mrview/tool/base.h"
 
@@ -59,6 +64,43 @@ namespace MR
             e.display();
           }
         });
+      }
+
+
+
+      void build_region_menu (QMenu& menu, const vector<RegionRef>& regions,
+                              const std::function<void(QMenu*, const RegionRef&)>& add_actions)
+      {
+        std::string provider;
+        std::map<std::string, QMenu*> categories;   // per provider, cleared below
+        for (const auto& region : regions) {
+          if (region.provider != provider) {
+            provider = region.provider;
+            menu.addSection (qstr (provider));
+            categories.clear();
+          }
+
+          // "association/AF_L" -> an "association" submenu holding "AF_L".
+          QMenu* parent = &menu;
+          std::string label = region.name;
+          const size_t slash = region.name.find ('/');
+          if (slash != std::string::npos) {
+            const std::string category = region.name.substr (0, slash);
+            label = region.name.substr (slash + 1);
+            auto it = categories.find (category);
+            if (it == categories.end())
+              it = categories.insert ({ category, menu.addMenu (qstr (category)) }).first;
+            parent = it->second;
+          }
+
+          QMenu* sub = parent->addMenu (qstr (label));
+          if (region.colour.isValid()) {
+            QPixmap swatch (12, 12);
+            swatch.fill (region.colour);
+            sub->setIcon (QIcon (swatch));
+          }
+          add_actions (sub, region);
+        }
       }
 
 

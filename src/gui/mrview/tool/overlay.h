@@ -17,6 +17,8 @@
 #ifndef __gui_mrview_tool_overlay_h__
 #define __gui_mrview_tool_overlay_h__
 
+#include <QLineEdit>
+
 #include "gui/mrview/mode/base.h"
 #include "gui/mrview/tool/base.h"
 #include "gui/mrview/adjust_button.h"
@@ -55,6 +57,11 @@ namespace MR
 
             size_t visible_number_colourbars () override;
             void render_image_colourbar(const Image& image) override;
+
+            //! Load images from disk as overlays, as if they had been opened here.
+            /*! For other tools that derive a volume and want it listed alongside
+             *  hand-loaded overlays - the tract endpoint maps, for one. */
+            void add_overlays (const vector<std::string>& paths);
 
             static void add_commandline_options (MR::App::OptionList& options);
             virtual bool process_commandline_option (const MR::App::ParsedOption& opt) override;
@@ -103,6 +110,9 @@ namespace MR
              std::unique_ptr<Regions> regions;
              Model* image_list_model;
              QListView* image_list_view;
+             QLineEdit* overlay_filter;
+             //! List only the overlays matching overlay_filter; visibility untouched.
+             void apply_filter ();
              ColourMapButton* colourmap_button;
              AdjustButton *min_value, *max_value, *lower_threshold, *upper_threshold;
              QCheckBox *lower_threshold_check_box, *upper_threshold_check_box;

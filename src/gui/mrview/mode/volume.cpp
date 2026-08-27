@@ -42,6 +42,11 @@ namespace MR
               "uniform mat4 overlay_M" + str(n) + ";\n"
               "out vec3 overlay_texcoord" + str(n) + ";\n";
 
+          for (int n = 0; n < mode.atlases_for_3D.size(); ++n)
+            source +=
+              "uniform mat4 atlas_M" + str(n) + ";\n"
+              "out vec3 atlas_texcoord" + str(n) + ";\n";
+
           source +=
             "void main () {\n"
             "  texcoord = vertpos;\n"
@@ -50,6 +55,10 @@ namespace MR
           for (int n = 0; n < mode.overlays_for_3D.size(); ++n)
             source +=
               "  overlay_texcoord"+str(n) + " = (overlay_M"+str(n) + " * vec4 (vertpos,1)).xyz;\n";
+
+          for (int n = 0; n < mode.atlases_for_3D.size(); ++n)
+            source +=
+              "  atlas_texcoord"+str(n) + " = (atlas_M"+str(n) + " * vec4 (vertpos,1)).xyz;\n";
 
           source +=
             "}\n";
@@ -92,8 +101,35 @@ namespace MR
               "in vec3 overlay_texcoord"+str(n) + ";\n";
           }
 
+          for (int n = 0; n < mode.atlases_for_3D.size(); ++n) {
+            source +=
+              "uniform sampler3D atlas_sampler"+str(n) + ";\n"
+              "uniform sampler2D atlas_lut"+str(n) + ";\n"
+              "uniform vec3 atlas_ray"+str(n) + ";\n"
+              "uniform int atlas_focus"+str(n) + ";\n"
+              "uniform int atlas_hover"+str(n) + ";\n"
+              "uniform float atlas_alpha"+str(n) + ";\n"
+              "uniform float atlas_dim"+str(n) + ";\n"
+              "in vec3 atlas_texcoord"+str(n) + ";\n";
+          }
+
           source +=
             "uniform sampler2D depth_sampler;\n"
+            // Where this viewport starts, in device pixels. gl_FragCoord is in window
+            // coordinates while the depth texture was copied from the viewport, so the
+            // two only line up when the viewport starts at the window's corner - which
+            // it does whenever the volume owns the whole area, and does not when it is
+            // one quadrant of an ortho montage. Out-of-range texelFetch reads zero,
+            // which reads as "something is already in front of every fragment", and
+            // every ray is cut before it starts.
+            "uniform ivec2 depth_offset;\n"
+            // How far to see through the render, 0 to 1. It scales the image's own
+            // contribution and nothing else, which is what makes it an x-ray rather
+            // than a fade: whatever was drawn before the volume - tracts, meshes -
+            // shows through in proportion, because less of the volume is blended over
+            // it; and overlays, which are composited inside this loop, get the same
+            // benefit because the volume accumulates less opacity in front of them.
+            "uniform float xray;\n"
             "uniform mat4 M;\n"
             "uniform float ray_z, selection_thickness;\n"
             "uniform vec3 ray;\n"
@@ -105,6 +141,8 @@ namespace MR
 
           source +=
             "  final_color = vec4 (0.0);\n"
+            "  vec4 overlay_color = vec4 (0.0);\n"
+            "  float occlusion;\n"
             "  float dither = fract(sin(gl_FragCoord.x * 12.9898 + gl_FragCoord.y * 78.233) * 43758.5453);\n"
             "  vec3 coord = texcoord + ray * dither;\n";
 
@@ -112,8 +150,12 @@ namespace MR
             source +=
               "  vec3 overlay_coord"+str(n) +" = overlay_texcoord"+str(n) + " + overlay_ray"+str(n) + " * dither;\n";
 
+          for (int n = 0; n < mode.atlases_for_3D.size(); ++n)
+            source +=
+              "  vec3 atlas_coord"+str(n) +" = atlas_texcoord"+str(n) + " + atlas_ray"+str(n) + " * dither;\n";
+
               source +=
-            "  float depth = texelFetch (depth_sampler, ivec2(gl_FragCoord.xy), 0).r;\n"
+            "  float depth = texelFetch (depth_sampler, ivec2(gl_FragCoord.xy) - depth_offset, 0).r;\n"
             "  float current_depth = gl_FragCoord.z + ray_z * dither;\n"
             "  int nmax = 10000;\n"
             "  if (ray.x < 0.0) nmax = int (-texcoord.s/ray.x);\n"
@@ -212,8 +254,41 @@ namespace MR
 
             source +=
               "        color.a = amplitude * overlay"+str(n) + "_alpha;\n"
-              "        final_color.rgb += (1.0 - final_color.a) * color.rgb * color.a;\n"
-              "        final_color.a += color.a;\n"
+              // How much of the volume in front of this sample still hides it. At
+              // x-ray 1 none of it does and the overlay reads straight through; at 0
+              // the volume occludes it exactly as it did before any of this, so the
+              // slider runs from the original picture to a clear one.
+              "        occlusion = 1.0 - clamp (final_color.a * (1.0 - xray), 0.0, 1.0);\n"
+              "        overlay_color.rgb += occlusion * (1.0 - overlay_color.a) * color.rgb * color.a;\n"
+              "        overlay_color.a += occlusion * color.a;\n"
+              "      }\n"
+              "    }\n";
+          }
+
+
+
+          // ATLASES: region index in, palette colour out. A region ticked in the
+          // panel - which the palette entry's alpha channel records - keeps its full
+          // opacity, as do the regions under the crosshair and under the mouse; the
+          // rest are dimmed, matching what the slice shader does. Composited into the
+          // overlay accumulator, so the x-ray slider governs it the same way.
+          for (int n = 0; n < mode.atlases_for_3D.size(); ++n) {
+            source +=
+              "    atlas_coord"+str(n) + " += atlas_ray"+str(n) + ";\n"
+              "    if (atlas_coord"+str(n) + ".s >= 0.0 && atlas_coord"+str(n) + ".s <= 1.0 &&\n"
+              "        atlas_coord"+str(n) + ".t >= 0.0 && atlas_coord"+str(n) + ".t <= 1.0 &&\n"
+              "        atlas_coord"+str(n) + ".p >= 0.0 && atlas_coord"+str(n) + ".p <= 1.0) {\n"
+              // Nearest, never interpolated: halfway between region 3 and region 9 is
+              // not region 6.
+              "      int region = int (texture (atlas_sampler"+str(n) + ", atlas_coord"+str(n) + ").r + 0.5);\n"
+              "      if (region > 0) {\n"
+              "        vec4 entry = texelFetch (atlas_lut"+str(n) + ", ivec2 (region, 0), 0);\n"
+              "        color = vec4 (entry.rgb, atlas_alpha"+str(n) + ");\n"
+              "        if (entry.a <= 0.5 && region != atlas_focus"+str(n) + " && region != atlas_hover"+str(n) + ")\n"
+              "          color.a *= atlas_dim"+str(n) + ";\n"
+              "        occlusion = 1.0 - clamp (final_color.a * (1.0 - xray), 0.0, 1.0);\n"
+              "        overlay_color.rgb += occlusion * (1.0 - overlay_color.a) * color.rgb * color.a;\n"
+              "        overlay_color.a += occlusion * color.a;\n"
               "      }\n"
               "    }\n";
           }
@@ -233,9 +308,42 @@ namespace MR
               "    final_color.a += highlight;\n";
           }
 
+          // The early-out has to stay tied to the image accumulator, and the
+          // accumulators have to stay clamped. Front-to-back compositing weights each
+          // sample by (1 - a); let a run past 1 and that weight goes negative, so
+          // every further sample *subtracts* colour and the render goes black. That is
+          // what the original break at 0.95 was quietly preventing.
+          //
+          // With overlays in play the loop has to keep going after the image has
+          // saturated - that is the whole point of giving them their own accumulator -
+          // so there the clamp does the job the break used to, and the break waits for
+          // both.
+          if (mode.overlays_for_3D.size() || mode.atlases_for_3D.size()) {
+            source +=
+              "    final_color.a = min (final_color.a, 1.0);\n"
+              "    overlay_color.a = min (overlay_color.a, 1.0);\n"
+              "    if (final_color.a > 0.95 && overlay_color.a > 0.95) break;\n";
+          }
+          else {
+            source +=
+              "    if (final_color.a > 0.95) break;\n";
+          }
+
           source +=
-            "    if (final_color.a > 0.95) break;\n"
             "  }\n"
+            // The image is faded here, at the end, rather than sample by sample. Front
+            // to back compositing weights each sample by how much opacity is already
+            // in front of it, so thinning the samples lets deeper material through and
+            // the render gets *brighter* - measured going up, not down, until alpha
+            // hit exactly zero and it vanished. Scaling what the ray-cast produced is
+            // the fade that was wanted.
+            "  final_color *= 1.0 - xray;\n"
+            // Overlays sit on top of the result, at their own opacity, so they read
+            // through the render however transparent it is. That does cost the
+            // interleaving between overlay and image along the ray - an overlay behind
+            // image material now draws in front of it - which is the trade an x-ray is.
+            "  final_color.rgb = overlay_color.rgb + (1.0 - overlay_color.a) * final_color.rgb;\n"
+            "  final_color.a = overlay_color.a + (1.0 - overlay_color.a) * final_color.a;\n"
             "}\n";
 
           return source;
@@ -244,11 +352,31 @@ namespace MR
 
 
 
+        vector<uint32_t> Volume::Shader::overlay_state_of (const Volume& mode)
+        {
+          vector<uint32_t> out;
+          out.reserve (mode.overlays_for_3D.size());
+          for (const ImageBase* image : mode.overlays_for_3D) {
+            out.push_back (uint32_t (image->colourmap)
+                         | (image->use_discard_lower() ? 0x10000u : 0u)
+                         | (image->use_discard_upper() ? 0x20000u : 0u)
+                         | (image->scale_inverted()    ? 0x40000u : 0u));
+          }
+          // Only the count for atlases: everything that varies about them - which
+          // region is focused, how dim the rest are - is a uniform, not source.
+          out.push_back (0x80000000u | uint32_t (mode.atlases_for_3D.size()));
+          return out;
+        }
+
+
+
         bool Volume::Shader::need_update (const Displayable& object) const
         {
           if (mode.update_overlays)
             return true;
           if (mode.get_active_clip_planes().size() != active_clip_planes)
+            return true;
+          if (overlay_state_of (mode) != overlay_state)
             return true;
           if (mode.get_cliphighlightstate() != cliphighlight)
             return true;
@@ -262,6 +390,7 @@ namespace MR
         void Volume::Shader::update (const Displayable& object)
         {
           active_clip_planes = mode.get_active_clip_planes().size();
+          overlay_state = overlay_state_of (mode);
           cliphighlight = mode.get_cliphighlightstate();
           clipintersectionmode = mode.get_clipintersectionmodestate();
           Displayable::Shader::update (object);
@@ -339,6 +468,18 @@ namespace MR
 
 
 
+        //CONF option: MRViewVolumeXray
+        //CONF How far to see through a volume render, from 0 (solid) to 1 (gone).
+        //CONF Scales the image's contribution only, so tracts, meshes and overlays
+        //CONF inside the render show through in proportion.
+        //CONF default: 0
+        // Not initialised from the config here: a static initialiser runs before
+        // App::init has read the config file, so it would always see the default.
+        // Ortho does the same thing for its own options, from the constructor.
+        float Volume::xray_strength = 0.0f;
+
+
+
         void Volume::paint (Projection& projection)
         {
           GL::assert_context_is_current();
@@ -347,6 +488,7 @@ namespace MR
           GL_CHECK_ERROR;
 
           overlays_for_3D.clear();
+          atlases_for_3D.clear();
           render_tools (projection, true);
           gl::Disable (gl::BLEND);
           gl::Enable (gl::DEPTH_TEST);
@@ -475,15 +617,32 @@ namespace MR
             depth_texture.bind();
 
           GL_CHECK_ERROR;
+          // Copy from where this projection actually is, not from the window's corner.
+          // The two agree whenever the volume owns the whole area, which it did until
+          // Ortho started drawing one into a single quadrant; from a quadrant, reading
+          // at (0,0) samples the depth of a different pane entirely.
 #if QT_VERSION >= 0x050100
           int m = window().windowHandle()->devicePixelRatio();
-          gl::CopyTexImage2D (gl::TEXTURE_2D, 0, gl::DEPTH_COMPONENT, 0, 0, m*projection.width(), m*projection.height(), 0);
+          gl::CopyTexImage2D (gl::TEXTURE_2D, 0, gl::DEPTH_COMPONENT,
+                              m*projection.x_position(), m*projection.y_position(),
+                              m*projection.width(), m*projection.height(), 0);
 #else
-          gl::CopyTexImage2D (gl::TEXTURE_2D, 0, gl::DEPTH_COMPONENT, 0, 0, projection.width(), projection.height(), 0);
+          gl::CopyTexImage2D (gl::TEXTURE_2D, 0, gl::DEPTH_COMPONENT,
+                              projection.x_position(), projection.y_position(),
+                              projection.width(), projection.height(), 0);
 #endif
 
           GL_CHECK_ERROR;
           gl::Uniform1i (gl::GetUniformLocation (volume_shader, "depth_sampler"), 1);
+          gl::Uniform1f (gl::GetUniformLocation (volume_shader, "xray"),
+                         std::min (1.0f, std::max (0.0f, xray_strength)));
+#if QT_VERSION >= 0x050100
+          gl::Uniform2i (gl::GetUniformLocation (volume_shader, "depth_offset"),
+                         m*projection.x_position(), m*projection.y_position());
+#else
+          gl::Uniform2i (gl::GetUniformLocation (volume_shader, "depth_offset"),
+                         projection.x_position(), projection.y_position());
+#endif
 
           vector< std::pair<GL::vec4,bool> > clip = get_active_clip_planes();
           GL_CHECK_ERROR;
@@ -508,6 +667,27 @@ namespace MR
             gl::Uniform3fv (gl::GetUniformLocation (volume_shader, ("overlay_ray"+str(n)).c_str()), 1, overlay_ray);
 
             overlays_for_3D[n]->set_shader_variables (volume_shader, overlays_for_3D[n]->scale_factor(), "overlay"+str(n)+"_");
+          }
+
+          // Two units per atlas, after the overlays: the index volume and its palette.
+          for (int n = 0; n < atlases_for_3D.size(); ++n) {
+            const Atlas3D& atlas = atlases_for_3D[n];
+            const int unit = 2 + overlays_for_3D.size() + 2*n;
+            gl::ActiveTexture (gl::TEXTURE0 + unit);
+            gl::BindTexture (gl::TEXTURE_3D, atlas.index_texture);
+            gl::Uniform1i (gl::GetUniformLocation (volume_shader, ("atlas_sampler"+str(n)).c_str()), unit);
+            gl::ActiveTexture (gl::TEXTURE0 + unit + 1);
+            gl::BindTexture (gl::TEXTURE_2D, atlas.palette_texture);
+            gl::Uniform1i (gl::GetUniformLocation (volume_shader, ("atlas_lut"+str(n)).c_str()), unit + 1);
+
+            GL::mat4 atlas_M = GL::inv (get_tex_to_scanner_matrix (*atlas.image)) * T2S;
+            GL::vec4 atlas_ray = atlas_M * GL::vec4 (ray, 0.0);
+            gl::UniformMatrix4fv (gl::GetUniformLocation (volume_shader, ("atlas_M"+str(n)).c_str()), 1, gl::FALSE_, atlas_M);
+            gl::Uniform3fv (gl::GetUniformLocation (volume_shader, ("atlas_ray"+str(n)).c_str()), 1, atlas_ray);
+            gl::Uniform1i (gl::GetUniformLocation (volume_shader, ("atlas_focus"+str(n)).c_str()), atlas.focus);
+            gl::Uniform1i (gl::GetUniformLocation (volume_shader, ("atlas_hover"+str(n)).c_str()), atlas.hover);
+            gl::Uniform1f (gl::GetUniformLocation (volume_shader, ("atlas_alpha"+str(n)).c_str()), atlas.alpha);
+            gl::Uniform1f (gl::GetUniformLocation (volume_shader, ("atlas_dim"+str(n)).c_str()), atlas.dim);
           }
 
           GL_CHECK_ERROR;

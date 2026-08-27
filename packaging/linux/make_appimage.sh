@@ -25,6 +25,12 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/icons/hicolor/512x512/apps"
 
 cp bin/mrview "$APPDIR/usr/bin/mrview++"
+# Built-in tract atlas: antsRegistration beside the executable, data one level up
+# in share/mrtrix3/mrviewpp - both are where AtlasTemplate/data_path search.
+[ -x bin/antsRegistration ] && cp bin/antsRegistration "$APPDIR/usr/bin/"
+mkdir -p "$APPDIR/usr/share/mrtrix3/mrviewpp"
+cp share/mrtrix3/mrviewpp/* "$APPDIR/usr/share/mrtrix3/mrviewpp/" 2>/dev/null || true
+[ -f packaging/ANTS_LICENSE.txt ] && cp packaging/ANTS_LICENSE.txt "$APPDIR/usr/share/"
 cp -a lib/*.so* "$APPDIR/usr/lib/" 2>/dev/null || true
 
 cp icons/mrview++.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/mrview++.png"

@@ -14,7 +14,13 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <algorithm>
+
 #include "gui/mrview/tool/trackgen/runner.h"
+
+#include "algo/loop.h"
+#include "math/SH.h"
+#include "dwi/directions/predefined.h"
 
 #include "thread_queue.h"
 
@@ -64,6 +70,109 @@ namespace MR
 
 
 
+        bool trackgen_algorithm_uses_sh (size_t index)
+        {
+          // Indices follow trackgen_algorithms above:
+          //   0 FACT          peaks image - usable, via sh_to_peaks() below
+          //   1 iFOD1         SH
+          //   2 iFOD2         SH
+          //   3 NullDist1     null distribution, not a real tracking result
+          //   4 NullDist2     null distribution, not a real tracking result
+          //   5 SD_STREAM     SH
+          //   6 SeedTest      generates no streamlines
+          //   7 Tensor_Det    DWI series with a gradient table
+          //   8 Tensor_Prob   DWI series with a gradient table
+          switch (index) {
+            case 0: case 1: case 2: case 5: return true;
+            default: return false;
+          }
+        }
+
+
+
+        bool trackgen_algorithm_needs_peaks (size_t index)
+        {
+          return index == 0;   // FACT
+        }
+
+
+
+        std::string sh_to_peaks (const std::string& sh_path, const std::string& out_path,
+                                 size_t num_peaks)
+        {
+          // What sh2peaks does: a Newton search along each of a fixed set of 60
+          // directions, keeping the distinct maxima. Done in-process rather than by
+          // shelling out, so FACT works without sh2peaks being installed.
+          auto sh = Image<float>::open (sh_path);
+          const int lmax = Math::SH::LforN (sh.size(3));
+          if (lmax <= 0)
+            throw Exception ("\"" + sh_path + "\" is not a spherical harmonic image");
+
+          Header header (sh);
+          header.size(3) = 3 * num_peaks;
+          header.datatype() = DataType::Float32;
+          auto out = Image<float>::create (out_path, header);
+
+          const Eigen::MatrixXd directions = DWI::Directions::electrostatic_repulsion_60();
+          Math::SH::PrecomputedAL<float> precomputer (lmax);
+
+          Eigen::VectorXf values (sh.size(3));
+          for (auto l = Loop (0, 3) (sh, out); l; ++l) {
+            for (ssize_t v = 0; v != sh.size(3); ++v) {
+              sh.index(3) = v;
+              values[v] = sh.value();
+            }
+
+            vector<std::pair<float, Eigen::Vector3f>> peaks;
+            for (ssize_t d = 0; d != directions.rows(); ++d) {
+              const double azimuth = directions (d, 0), elevation = directions (d, 1);
+              Eigen::Vector3f direction (std::cos (azimuth) * std::sin (elevation),
+                                         std::sin (azimuth) * std::sin (elevation),
+                                         std::cos (elevation));
+              const float amplitude = Math::SH::get_peak (values, lmax, direction, &precomputer);
+              // sh2peaks applies no amplitude threshold by default, so neither do we.
+              if (!std::isfinite (amplitude))
+                continue;
+              // Newton searches from neighbouring start directions converge on the
+              // same maximum; keep only the distinct ones. The 0.99 cutoff is
+              // sh2peaks' DOT_THRESHOLD - a looser one merges genuinely separate
+              // crossing-fibre peaks.
+              bool duplicate = false;
+              for (const auto& existing : peaks) {
+                if (std::abs (direction.dot (existing.second)) > 0.99f) {
+                  duplicate = true;
+                  break;
+                }
+              }
+              if (!duplicate)
+                peaks.push_back ({ amplitude, direction });
+            }
+            std::sort (peaks.begin(), peaks.end(),
+                       [] (const std::pair<float, Eigen::Vector3f>& a,
+                           const std::pair<float, Eigen::Vector3f>& b) { return a.first > b.first; });
+
+            for (size_t n = 0; n != num_peaks; ++n) {
+              const bool have = n < peaks.size();
+              for (size_t axis = 0; axis != 3; ++axis) {
+                out.index(3) = 3*n + axis;
+                out.value() = have ? peaks[n].first * peaks[n].second[axis] : NaN;
+              }
+            }
+          }
+          return out_path;
+        }
+
+
+
+        bool trackgen_algorithm_uses_rk4 (size_t index)
+        {
+          // iFOD2 and NullDist2 throw "4th-order Runge-Kutta integration not valid"
+          // (algorithms/iFOD2.h); FACT does the same but is not offered anyway.
+          return !(index == 2 || index == 4 || index == 0);
+        }
+
+
+
         namespace
         {
 
@@ -102,7 +211,10 @@ namespace MR
                     break;
                   case GeneratedTrack::status_t::ACCEPTED:
                     ++state.selected; ++state.streamlines; ++state.seeds;
-                    out.push_back (Streamline<float> (tck));
+                    {
+                      std::lock_guard<std::mutex> lock (state.results_mutex);
+                      out.push_back (Streamline<float> (tck));
+                    }
                     break;
                   case GeneratedTrack::status_t::TRACK_REJECTED:
                     ++state.streamlines; ++state.seeds;

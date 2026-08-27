@@ -464,6 +464,40 @@ namespace MR
           throw Exception ("TRX file \"" + file + "\" has no offsets array");
         }
 
+        //! Read every groups/<name> array in one pass over the archive.
+        /*! read_uint() re-reads the whole file per array, which is fine for one
+         *  lookup and quadratic for a whole atlas: 102 groups of an 82 MB archive
+         *  cost 8 GB of reading and about sixteen seconds. */
+        inline std::map<std::string, vector<uint64_t>> read_groups (const std::string& file) {
+          const vector<uint8_t> b = _slurp (file);
+          const auto entries = _entries (b, file);
+          std::map<std::string, vector<uint64_t>> out;
+          for (const auto& kv : entries) {
+            const std::string& n = kv.first;
+            if (n.compare (0, 7, "groups/") != 0) continue;
+            std::string base = n.substr (7);
+            const size_t dot = base.find_last_of ('.');
+            if (dot == std::string::npos) continue;
+            const std::string dtype = base.substr (dot + 1);
+            base = base.substr (0, dot);
+            if (base.empty()) continue;
+            const size_t bytes = (dtype == "uint64" || dtype == "int64") ? 8
+                               : (dtype == "uint32" || dtype == "int32") ? 4
+                               : (dtype == "uint16" || dtype == "int16") ? 2
+                               : (dtype == "uint8"  || dtype == "int8" || dtype == "bool") ? 1 : 0;
+            if (!bytes) continue;
+            const vector<uint8_t> raw = _extract (b, kv.second, file);
+            vector<uint64_t>& indices = out[base];
+            indices.resize (raw.size() / bytes);
+            for (size_t i = 0; i != indices.size(); ++i) {
+              uint64_t v = 0;
+              std::memcpy (&v, &raw[bytes * i], bytes);
+              indices[i] = v;
+            }
+          }
+          return out;
+        }
+
         //! List the named groups (groups/<name>.<dtype>) in a TRX file.
         inline vector<std::pair<std::string,std::string>> groups (const std::string& file) {
           const vector<uint8_t> b = _slurp (file);

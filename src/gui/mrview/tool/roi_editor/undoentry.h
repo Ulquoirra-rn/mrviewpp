@@ -19,6 +19,7 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 
 #include "types.h"
 
@@ -80,7 +81,12 @@ namespace MR
 
           //! Offset into before/after of voxel (u,v) on slab slice \a s.
           size_t offset_of (GLint s, GLint u, GLint v) const {
-            std::array<GLint,3> idx;
+            // slab_axis must be the one axis that is not in-plane, otherwise the
+            // assignments below collide and leave an entry unset. Zero-initialise
+            // as well, so that a future slip degrades to a wrong-but-in-bounds
+            // index rather than a heap overflow.
+            assert (slab_axis != slice_axes[0] && slab_axis != slice_axes[1]);
+            std::array<GLint,3> idx = { { 0, 0, 0 } };
             idx[slab_axis] = s;
             idx[slice_axes[0]] = u;
             idx[slice_axes[1]] = v;

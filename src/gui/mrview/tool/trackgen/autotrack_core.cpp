@@ -18,6 +18,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <memory>
+#include <mutex>
 
 #include "algo/loop.h"
 #include "transform.h"
@@ -119,39 +122,9 @@ namespace MR
                               vector<Eigen::Vector3f>& cloud_a,
                               vector<Eigen::Vector3f>& cloud_b)
         {
-          cloud_a.clear();
-          cloud_b.clear();
-          if (tracks.empty())
-            return;
-
-          // Orient against the longest streamline: streamline direction is
-          // arbitrary, so without this each "cloud" would hold a mix of both ends.
-          size_t reference = 0;
-          size_t longest = 0;
-          for (size_t i = 0; i != tracks.size(); ++i) {
-            if (tracks[i].size() > longest) {
-              longest = tracks[i].size();
-              reference = i;
-            }
-          }
-          if (tracks[reference].size() < 2)
-            return;
-          const Eigen::Vector3f ref_front = tracks[reference].front();
-          const Eigen::Vector3f ref_back  = tracks[reference].back();
-
-          for (const auto& tck : tracks) {
-            if (tck.size() < 2)
-              continue;
-            const float direct  = (tck.front()-ref_front).norm() + (tck.back()-ref_back).norm();
-            const float flipped = (tck.front()-ref_back).norm()  + (tck.back()-ref_front).norm();
-            if (direct <= flipped) {
-              cloud_a.push_back (tck.front());
-              cloud_b.push_back (tck.back());
-            } else {
-              cloud_a.push_back (tck.back());
-              cloud_b.push_back (tck.front());
-            }
-          }
+          // The same clouds the post-tracking endpoint gate needs, so there is one
+          // implementation of "which end is which" rather than two that could drift.
+          MR::DWI::Tractography::Recognition::endpoint_clouds (tracks, cloud_a, cloud_b);
         }
 
 
@@ -182,13 +155,30 @@ namespace MR
 
 
 
+        vector<Streamline<float>> read_bundle (const std::string& path)
+        {
+          vector<Streamline<float>> out;
+          Properties props;
+          Reader<float> reader (path, props);
+          Streamline<float> tck;
+          while (reader (tck))
+            out.push_back (tck);
+          return out;
+        }
+
+
+
         void autotrack_bundle (const std::string& bundle_path,
                                const std::string& fod_path,
                                const MR::Header& grid,
                                const AutotrackParams& params,
                                AutotrackResult& result,
-                               TrackGenState& state)
+                               TrackGenState& state,
+                               vector<Streamline<float>>* live,
+                               vector<Streamline<float>>* rejected)
         {
+          if (rejected)
+            rejected->clear();
           result.name = Path::basename (bundle_path);
           const size_t dot = result.name.find_last_of ('.');
           if (dot != std::string::npos)
@@ -198,14 +188,7 @@ namespace MR
           result.error.clear();
 
           // --- the atlas bundle ---
-          vector<Streamline<float>> atlas;
-          {
-            Properties props;
-            Reader<float> reader (bundle_path, props);
-            Streamline<float> tck;
-            while (reader (tck))
-              atlas.push_back (tck);
-          }
+          const vector<Streamline<float>> atlas = read_bundle (bundle_path);
           result.atlas_streamlines = atlas.size();
           if (atlas.empty())
             throw Exception ("atlas bundle \"" + bundle_path + "\" is empty");
@@ -233,7 +216,15 @@ namespace MR
             return;
 
           // --- track within the territory ---
-          vector<Streamline<float>> generated;
+          // Track straight into the caller's buffer when it wants to watch: the
+          // write kernel appends under state.results_mutex, so a reader holding
+          // that lock always sees a consistent set.
+          vector<Streamline<float>> private_buffer;
+          vector<Streamline<float>>& generated = live ? *live : private_buffer;
+          {
+            std::lock_guard<std::mutex> lock (state.results_mutex);
+            generated.clear();
+          }
           {
             Properties properties;
             for (const auto& kv : params.scalars)
@@ -280,12 +271,55 @@ namespace MR
             return;
 
           // --- keep the streamlines that look like the atlas bundle ---
-          BundleMatcher matcher (atlas, params.match);
-          for (const auto& tck : generated) {
-            float d = 0.0f;
-            if (matcher.matches (tck, d))
-              result.tracks.push_back (tck);
+          vector<Streamline<float>> kept, discarded;
+          autotrack_match (atlas, params, generated, kept, discarded, result.effective_distance,
+                           &result.refine_report);
+          if (rejected)
+            *rejected = std::move (discarded);
+
+          if (live) {
+            // Whoever is displaying *live now sees the rejects vanish.
+            std::lock_guard<std::mutex> lock (state.results_mutex);
+            *live = std::move (kept);
+          } else {
+            result.tracks = std::move (kept);
           }
+        }
+
+
+
+        void autotrack_match (const vector<Streamline<float>>& atlas,
+                              const AutotrackParams& params,
+                              const vector<Streamline<float>>& candidates,
+                              vector<Streamline<float>>& kept,
+                              vector<Streamline<float>>& rejected,
+                              float& effective_distance,
+                              Recognition::RefineReport* report)
+        {
+          // Everything this used to do inline now lives in
+          // dwi/tractography/recognition/refine.cpp, so the same five stages run
+          // here and under tckrefine - which is what let the competitive stage be
+          // measured against held-out atlas halves rather than argued about.
+          Recognition::RefineReport local;
+          Recognition::RefineReport& r = report ? *report : local;
+
+          std::unique_ptr<Recognition::PopulationMap> population;
+          if (params.population_map.size()) {
+            try {
+              population.reset (new Recognition::PopulationMap (params.population_map,
+                                                                params.population_to_map));
+            } catch (Exception& e) {
+              // Without it the other stages still run; saying nothing would leave the
+              // user wondering why a bundle behaved differently from its neighbour.
+              WARN ("could not read the population map \"" + params.population_map
+                    + "\": " + e[0]);
+            }
+          }
+
+          Recognition::refine_bundle (atlas, params.match, params.refine,
+                                      params.competitors, candidates, kept, rejected, r,
+                                      nullptr, population.get());
+          effective_distance = r.applied_distance;
         }
 
 

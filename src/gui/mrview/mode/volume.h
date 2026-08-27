@@ -18,6 +18,7 @@
 #define __gui_mrview_mode_volume_h__
 
 #include "app.h"
+#include "file/config.h"
 #include "gui/mrview/mode/base.h"
 #include "gui/opengl/transformation.h"
 
@@ -40,10 +41,26 @@ namespace MR
             Volume () :
               Base (FocusContrast | MoveTarget | TiltRotate | ShaderTransparency | ShaderThreshold | ShaderClipping),
               volume_shader (*this) {
+                static bool conf_read = false;
+                if (!conf_read)
+                  xray_strength = MR::File::Config::get_float ("MRViewVolumeXray", 0.0f);
+                conf_read = true;
               }
 
             virtual void paint (Projection& projection);
             virtual void tilt_event ();
+
+            //! How far to see through the render, 0 to 1.
+            /*! Scales the image's contribution to the ray-cast and nothing else, so
+             *  anything drawn before the volume - tracts, meshes - shows through in
+             *  proportion, and overlays, which are composited inside the ray-cast,
+             *  come through with it. At 1 the render is gone and only what is inside
+             *  it remains; at 0 nothing changes.
+             *
+             *  Static because it is a property of how the scene is being read rather
+             *  than of one mode object, and the mode is rebuilt whenever the view
+             *  mode changes. */
+            static float xray_strength;
 
           protected:
             GL::VertexBuffer volume_VB, volume_VI;
@@ -60,6 +77,20 @@ namespace MR
                 virtual void update (const Displayable& object);
                 const Volume& mode;
                 size_t active_clip_planes;
+                //! What the source was generated for, one entry per overlay.
+                /*! Compared rather than trusted to a flag. The Overlay tool announces a
+                 *  change by setting update_overlays on the Window's *current* mode,
+                 *  which is not this one when Ortho paints a volume into its spare
+                 *  quadrant - so the flag never arrives. First the count went unnoticed
+                 *  and the overlay was collected every frame and composited by nothing;
+                 *  then the colourmap went unnoticed and it drew in whatever map the
+                 *  source happened to be built with, orange where the colourbar said
+                 *  blue. Everything the source generation branches on is in here. The
+                 *  clip planes were already handled by comparison; this now matches. */
+                vector<uint32_t> overlay_state;
+
+                //! The signature compared above: colourmap and the flags that alter the source.
+                static vector<uint32_t> overlay_state_of (const Volume& mode);
                 bool cliphighlight;
                 bool clipintersectionmode;
             } volume_shader;

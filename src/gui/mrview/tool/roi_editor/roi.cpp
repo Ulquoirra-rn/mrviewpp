@@ -18,10 +18,13 @@
 #include <limits>
 #include <algorithm>
 
+#include <QDoubleValidator>
 #include <QProgressBar>
 #include <QTimer>
 
 #include "gui/mrview/tool/roi_editor/roi.h"
+
+#include "segment/growcut.h"
 
 #include "header.h"
 #include "image.h"
@@ -95,6 +98,21 @@ namespace MR
           layout->addWidget (hide_all_button, 1);
 
           main_box->addLayout (layout, 0);
+
+          // Directly under the open/close row, so the batch show/hide controls sit
+          // with the other list-wide actions rather than at the foot of the panel.
+          HBoxLayout* checkall_layout = new HBoxLayout;
+          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
+          check_all_button->setObjectName ("batchbtn");
+          check_all_button->setToolTip (tr ("Show every ROI by checking its box"));
+          connect (check_all_button, &QPushButton::clicked, this, [this]{ list_model->check_all(); updateGL(); });
+          checkall_layout->addWidget (check_all_button, 1);
+          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
+          uncheck_all_button->setObjectName ("batchbtn");
+          uncheck_all_button->setToolTip (tr ("Hide every ROI by unchecking its box"));
+          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ list_model->uncheck_all(); updateGL(); });
+          checkall_layout->addWidget (uncheck_all_button, 1);
+          main_box->addLayout (checkall_layout, 0);
 
           list_view = new QListView (this);
           list_view->setSelectionMode (QAbstractItemView::ExtendedSelection);
@@ -212,6 +230,11 @@ namespace MR
                   "Anything you draw on a slice is applied through this thickness\n"
                   "perpendicular to the view, instead of to that one slice. Set it to\n"
                   "0 (or leave it blank) to draw on a single slice as before."));
+          // AdjustButton's min/max bound dragging only, not typing, so a thickness
+          // also needs a validator to keep negative values out of the field.
+          slab_thickness_button->setValidator (
+              new QDoubleValidator (0.0, std::numeric_limits<double>::max(), 2, slab_thickness_button));
+          slab_thickness_button->setMin (0.0f);
           slab_thickness_button->setValue (0.0f);
           grid_layout->addWidget (slab_thickness_button, 2, 1);
 
@@ -312,19 +335,6 @@ namespace MR
 
           connect (list_model, SIGNAL (dataChanged (const QModelIndex&, const QModelIndex&)),
               this, SLOT (toggle_shown_slot (const QModelIndex&, const QModelIndex&)));
-
-          HBoxLayout* checkall_layout = new HBoxLayout;
-          QPushButton* check_all_button = new QPushButton (tr ("Check all"), this);
-          check_all_button->setObjectName ("batchbtn");
-          check_all_button->setToolTip (tr ("Show every ROI by checking its box"));
-          connect (check_all_button, &QPushButton::clicked, this, [this]{ list_model->check_all(); updateGL(); });
-          checkall_layout->addWidget (check_all_button, 1);
-          QPushButton* uncheck_all_button = new QPushButton (tr ("Uncheck all"), this);
-          uncheck_all_button->setObjectName ("batchbtn");
-          uncheck_all_button->setToolTip (tr ("Hide every ROI by unchecking its box"));
-          connect (uncheck_all_button, &QPushButton::clicked, this, [this]{ list_model->uncheck_all(); updateGL(); });
-          checkall_layout->addWidget (uncheck_all_button, 1);
-          main_box->addLayout (checkall_layout, 0);
 
           // Bottom-right progress + completion notice for background segmentation.
           HBoxLayout* seg_layout = new HBoxLayout;
@@ -634,6 +644,7 @@ namespace MR
 
           seg_cancel = false;
           seg_running = true;
+          seg_clock.start();
           seg_show_progress ("Grow-cut…");
 
           if (seg_thread.joinable())
@@ -662,45 +673,9 @@ namespace MR
             for (size_t i = 0; i < N; ++i)
               if (lab_vol[i]) strength[i] = 1.0f;
 
-            const int dx[6] = { 1, -1, 0, 0, 0, 0 };
-            const int dy[6] = { 0, 0, 1, -1, 0, 0 };
-            const int dz[6] = { 0, 0, 0, 0, 1, -1 };
-            vector<uint32_t> next_label (lab_vol);
-            vector<float> next_strength (strength);
-            bool changed = true;
-            for (int iter = 0; iter != 1000 && changed && !seg_cancel; ++iter) {
-              changed = false;
-              for (ssize_t z = 0; z != nz; ++z) {
-                for (ssize_t y = 0; y != ny; ++y) {
-                  for (ssize_t x = 0; x != nx; ++x) {
-                    const size_t p = idx(x,y,z);
-                    uint32_t best_label = lab_vol[p];
-                    float best_strength = strength[p];
-                    const float cp = intensity[p];
-                    for (int n = 0; n != 6; ++n) {
-                      const ssize_t qx = x+dx[n], qy = y+dy[n], qz = z+dz[n];
-                      if (qx < 0 || qy < 0 || qz < 0 || qx >= nx || qy >= ny || qz >= nz)
-                        continue;
-                      const size_t q = idx(qx,qy,qz);
-                      if (strength[q] <= best_strength)
-                        continue;
-                      const float g = 1.0f - std::abs (cp - intensity[q]) / range;
-                      const float attack = g * strength[q];
-                      if (attack > best_strength) {
-                        best_strength = attack;
-                        best_label = lab_vol[q];
-                      }
-                    }
-                    next_label[p] = best_label;
-                    next_strength[p] = best_strength;
-                    if (best_label != lab_vol[p])
-                      changed = true;
-                  }
-                }
-              }
-              lab_vol.swap (next_label);
-              strength.swap (next_strength);
-            }
+            // Shared with the mrgrowcut command, which had a copy of the same loop.
+            MR::Segment::grow_cut (intensity, lab_vol, strength, nx, ny, nz, range, 1000,
+                                   [this] (size_t) { return !seg_cancel; });
 
             const bool cancelled = seg_cancel;
             // === back to the GUI thread for the GL uploads ===
@@ -733,7 +708,7 @@ namespace MR
                 }
               }
               updateGL();
-              seg_finish (tr ("✓ Segmentation complete"));
+              seg_finish (tr ("✓ Segmentation complete in %1 s").arg (seg_clock.elapsed(), 0, 'f', 1));
             }, Qt::QueuedConnection);
           });
         }
@@ -785,6 +760,7 @@ namespace MR
 
           seg_cancel = false;
           seg_running = true;
+          seg_clock.start();
           seg_show_progress ("Region grow…");
 
           if (seg_thread.joinable())
@@ -883,7 +859,7 @@ namespace MR
 
               update_undo_redo();
               updateGL();
-              seg_finish (tr ("✓ Segmentation complete"));
+              seg_finish (tr ("✓ Segmentation complete in %1 s").arg (seg_clock.elapsed(), 0, 'f', 1));
             }, Qt::QueuedConnection);
           });
         }
@@ -1173,8 +1149,11 @@ namespace MR
 
           try {
             if (choice.mode == Dialog::File::MultiSaveMode::SingleFile) {
+              const std::string stem = rois.size()
+                  ? Path::basename (rois[0]->get_filename()) + "_plus" + str (rois.size() - 1) + "_labels.mif"
+                  : std::string ("rois_labels.mif");
               std::string name = GUI::Dialog::File::get_save_image_name (&window(),
-                  "Save ROIs as one label image", "rois_labels.mif", &current_folder);
+                  "Save ROIs as one label image", stem, &current_folder);
               if (name.empty())
                 return;
               save_label_map (rois, name);
@@ -1573,6 +1552,16 @@ namespace MR
           brush_size_button->setMax (roi->max_brush_size);
           brush_size_button->setRate (0.1f * roi->min_brush_size);
           brush_size_button->setValue (roi->brush_size);
+
+          // A slab is a thickness, so it cannot be negative; cap it at the largest
+          // extent of the volume, beyond which it would just mean "every slice".
+          float max_extent = 0.0f;
+          for (size_t axis = 0; axis != 3; ++axis)
+            max_extent = std::max (max_extent,
+                                   float (roi->header().size (axis) * roi->header().spacing (axis)));
+          slab_thickness_button->setMin (0.0f);
+          slab_thickness_button->setMax (max_extent);
+          slab_thickness_button->setRate (0.1f * roi->min_brush_size);
         }
 
 
